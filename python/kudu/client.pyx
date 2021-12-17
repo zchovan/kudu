@@ -2766,6 +2766,11 @@ cdef class KuduError:
             del self.error
 
     def failed_op(self):
+        op = WriteOperation()
+        op.op = self.error.release_failed_op()
+        return op
+
+    def failed_op_str(self):
         """
         Get debug string representation of the failed operation.
 
@@ -2922,11 +2927,13 @@ cdef class WriteOperation:
         bint applied
         KuduWriteOperation* op
         PartialRow py_row
+        Table table
 
     def __cinit__(self, Table table, record=None):
         self.applied = 0
         self.py_row = PartialRow(table.schema)
         self.py_row._own = 0
+        self.table = table
 
     cdef add_to_session(self, Session s):
         if self.applied:
@@ -2942,6 +2949,8 @@ cdef class WriteOperation:
         # style.
         self.py_row[key] = value
 
+    cdef get_table(self):
+        return self.table
 
 cdef class Insert(WriteOperation):
     def __cinit__(self, Table table, record=None):

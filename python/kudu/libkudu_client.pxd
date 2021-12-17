@@ -458,6 +458,7 @@ cdef extern from "kudu/client/write_op.h" namespace "kudu::client" nogil:
     cdef cppclass KuduWriteOperation:
         KuduPartialRow& row()
         KuduPartialRow* mutable_row()
+        KuduTable* table()
 
         # This is a pure virtual function implemented on each of the cppclass
         # subclasses

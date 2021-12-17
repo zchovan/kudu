@@ -278,7 +278,7 @@ class TestClient(KuduTestBase, unittest.TestCase):
         # This test passes because we currently always return
         # True.
         self.assertTrue(error.was_possibly_successful())
-        self.assertEqual(error.failed_op(), 'INSERT int32 key=1')
+        self.assertEqual(error.failed_op().get_table().get_name(), table.get_name())
 
         # Delete inserted row
         session.apply(table.new_delete({'key': 1}))
