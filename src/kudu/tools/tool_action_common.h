@@ -82,6 +82,9 @@ extern const char* const kMasterAddressDesc;
 extern const char* const kTServerAddressArg;
 extern const char* const kTServerAddressDesc;
 
+extern const char* const kTServerAddressesArg;
+extern const char* const kTServerAddressesDesc;
+
 extern const char* const kCurrentLeaderUUIDArg;
 
 // Builder for actions involving RPC communications, either with a whole Kudu

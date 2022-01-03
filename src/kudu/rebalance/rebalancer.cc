@@ -536,6 +536,14 @@ void Rebalancer::BuildTServersToEmptyInfo(const ClusterRawInfo& raw_info,
   }
 }
 
+std::string Rebalancer::RunStatusAsString(Rebalancer::RunStatus run_status) {
+  static const char *enum_str[] =
+      { "Unknown", "Cluster is balanced", "Timed out" };
+
+  string tmp(enum_str[ static_cast<int>(run_status) ]);
+  return tmp;
+}
+
 void BuildTabletExtraInfoMap(
     const ClusterRawInfo& raw_info,
     std::unordered_map<std::string, TabletExtraInfo>* extra_info_by_tablet_id) {

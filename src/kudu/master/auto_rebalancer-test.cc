@@ -41,10 +41,12 @@
 #include "kudu/master/catalog_manager.h"
 #include "kudu/master/master.h"
 #include "kudu/master/master.pb.h"
+#include "kudu/master/master.proxy.h"
 #include "kudu/master/mini_master.h"
 #include "kudu/master/ts_descriptor.h"
 #include "kudu/master/ts_manager.h"
 #include "kudu/mini-cluster/internal_mini_cluster.h"
+#include "kudu/rpc/rpc_controller.h"
 #include "kudu/tserver/mini_tablet_server.h"
 #include "kudu/tserver/tablet_server.h"
 #include "kudu/util/logging_test_util.h"
@@ -66,6 +68,7 @@ using std::unordered_map;
 using std::unordered_set;
 using std::vector;
 using strings::Substitute;
+using kudu::master::MasterServiceProxy;
 
 DECLARE_bool(auto_leader_rebalancing_enabled);
 DECLARE_bool(auto_rebalancing_enabled);
@@ -277,6 +280,17 @@ class AutoRebalancerTest : public KuduTest {
     workload_->set_num_tablets(num_tablets);
     workload_->set_num_replicas(num_replicas);
     workload_->Setup();
+  }
+
+  // Perform the given state change on the given tablet server.
+  Status ChangeTServerState(const string& uuid, TServerStateChangePB::StateChange change) {
+    ChangeTServerStateRequestPB req;
+    ChangeTServerStateResponsePB resp;
+    TServerStateChangePB* state_change = req.mutable_change();
+    state_change->set_uuid(uuid);
+    state_change->set_change(change);
+    rpc::RpcController rpc;
+    return cluster_->master_proxy()->ChangeTServerState(req, &resp, &rpc);
   }
 
   void TearDown() override {

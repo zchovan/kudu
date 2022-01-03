@@ -313,6 +313,10 @@ const char* const kTServerAddressDesc = "Address of a Kudu Tablet Server of "
     "form 'hostname:port'. Port may be omitted if the Tablet Server is bound "
     "to the default port.";
 
+const char* const kTServerAddressesArg = "tserver_addresses";
+const char* const kTServerAddressesDesc = "Comma-separated list of Kudu Tablet Servers where each "
+                                          "address is of form 'hostname:port'.";
+
 namespace {
 
 enum PrintEntryType {

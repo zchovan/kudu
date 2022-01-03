@@ -219,12 +219,26 @@ int TSManager::GetLiveCount() const {
   return live_count;
 }
 
+int TSManager::GetDecommissionedCount() const {
+  shared_lock<rw_spinlock> l(lock_);
+  int deco_count = 0;
+  TServerStateMap stateMap = GetTServerStates();
+  for (auto const& entry : stateMap) {
+    // TServerStateMap entry schema is: <uuid, <state, timestamp>>
+    if (entry.second.first == TServerStatePB::DECOMMISSIONED) {
+      deco_count++;
+    }
+  }
+  return deco_count;
+}
+
 unordered_set<string> TSManager::GetUuidsToIgnoreForUnderreplication() const {
   unordered_set<string> uuids;
   shared_lock<RWMutex> tsl(ts_state_lock_);
   uuids.reserve(ts_state_by_uuid_.size());
   for (const auto& ts_and_state_timestamp : ts_state_by_uuid_) {
-    if (ts_and_state_timestamp.second.first == TServerStatePB::MAINTENANCE_MODE) {
+    if (ts_and_state_timestamp.second.first == TServerStatePB::MAINTENANCE_MODE ||
+        ts_and_state_timestamp.second.first == TServerStatePB::DECOMMISSIONED) {
       uuids.emplace(ts_and_state_timestamp.first);
     }
   }
@@ -259,6 +273,7 @@ Status TSManager::SetTServerState(const string& ts_uuid,
   if (existing_state == ts_state) {
     return Status::OK();
   }
+
   // If there is no existing state for the tserver, and the tserver hasn't yet
   // been registered, return an error, as appropriate.
   shared_ptr<TSDescriptor> ts_desc;
@@ -278,6 +293,16 @@ Status TSManager::SetTServerState(const string& ts_uuid,
     LOG(INFO) << Substitute("Unset tserver state for $0 from $1",
                             ts_uuid, TServerStatePB_Name(existing_state));
     return Status::OK();
+  }
+  // Ensure that TS cannot be deco'd without going through the 'DECOMMISSIONING_IN_PROGRESS' state
+  if (ts_state == TServerStatePB::DECOMMISSIONED
+      && existing_state != TServerStatePB::DECOMMISSIONING_IN_PROGRESS) {
+    return Status::IllegalState("Can't decommission TServer without rebalancing.");
+  }
+
+  if (existing_state != TServerStatePB::NONE) {
+    RETURN_NOT_OK_PREPEND(sys_catalog->RemoveTServerState(ts_uuid),
+                          Substitute("Failed to remove tserver state for $0", ts_uuid));
   }
   SysTServerStateEntryPB pb;
   pb.set_state(ts_state);
@@ -349,8 +374,10 @@ int TSManager::ClusterSkew() const {
 
 bool TSManager::AvailableForPlacementUnlocked(const TSDescriptor& ts) const {
   ts_state_lock_.AssertAcquired();
-  // TODO(KUDU-1827): this should also be used when decommissioning a server.
-  if (GetTServerStateUnlocked(ts.permanent_uuid()) == TServerStatePB::MAINTENANCE_MODE) {
+  if (GetTServerStateUnlocked(ts.permanent_uuid()) == TServerStatePB::MAINTENANCE_MODE
+      || GetTServerStateUnlocked(ts.permanent_uuid()) == TServerStatePB::DECOMMISSIONED
+      || GetTServerStateUnlocked(ts.permanent_uuid())
+      == TServerStatePB::DECOMMISSIONING_IN_PROGRESS) {
     return false;
   }
   // If the tablet server has heartbeated recently enough, it is considered

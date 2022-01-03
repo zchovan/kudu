@@ -429,16 +429,23 @@ Status RebalancerTool::KsckResultsToClusterRawInfo(const optional<string>& locat
   }
 
   unordered_set<string> tservers_in_maintenance_mode;
+  unordered_set<string> tservers_in_decommissioning;
   for (const auto& ts : tserver_summaries) {
     if (ContainsKeyValuePair(ksck_info.ts_states, ts.uuid, TServerStatePB::MAINTENANCE_MODE)) {
       tservers_in_maintenance_mode.emplace(ts.uuid);
     }
+    if (ContainsKeyValuePair(ksck_info.ts_states, ts.uuid,
+                             TServerStatePB::DECOMMISSIONING_IN_PROGRESS)) {
+      tservers_in_decommissioning.emplace(ts.uuid);
+    }
   }
+
 
   raw_info->tserver_summaries = std::move(tserver_summaries);
   raw_info->table_summaries = std::move(table_summaries);
   raw_info->tablet_summaries = std::move(tablet_summaries);
   raw_info->tservers_in_maintenance_mode = std::move(tservers_in_maintenance_mode);
+  raw_info->tservers_in_decommissioning = std::move(tservers_in_decommissioning);
 
   return Status::OK();
 }
@@ -1612,7 +1619,8 @@ Status RebalancerTool::IgnoredTserversRunner::CheckIgnoredTServers(
 
   // Make sure tablet servers that we need to empty are set maintenance mode.
   for (const auto& ts : tservers_to_empty) {
-    if (!ContainsKey(raw_info.tservers_in_maintenance_mode, ts)) {
+    if (!ContainsKey(raw_info.tservers_in_maintenance_mode, ts)
+        && !ContainsKey(raw_info.tservers_in_decommissioning, ts)) {
       return Status::IllegalState(
           Substitute("You should set maintenance mode for tablet server $0 first", ts));
     }

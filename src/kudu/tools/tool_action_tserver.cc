@@ -15,8 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
+#include <stddef.h>
+
 #include <functional>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -37,7 +40,9 @@
 #include "kudu/master/master.h"
 #include "kudu/master/master.pb.h"
 #include "kudu/master/master.proxy.h"
+#include "kudu/rebalance/rebalancer.h"
 #include "kudu/rpc/rpc_controller.h"
+#include "kudu/tools/rebalancer_tool.h"
 #include "kudu/tools/tool_action.h"
 #include "kudu/tools/tool_action_common.h"
 #include "kudu/tserver/tablet_server.h"
@@ -46,6 +51,7 @@
 #include "kudu/tserver/tserver_admin.pb.h"
 #include "kudu/tserver/tserver_admin.proxy.h"
 #include "kudu/util/init.h"
+#include "kudu/util/net/net_util.h"
 #include "kudu/util/status.h"
 #include "kudu/util/string_case.h"
 
@@ -64,6 +70,10 @@ DEFINE_bool(remove_tserver_state, true,
             "If false, remove the tserver from the master's in-memory map but keep its persisted "
             "state (if any). If the same tserver re-registers on the master it will get its "
             "original state");
+DEFINE_string(tservers_to_decommission, "",
+              "UUIDs of tablet servers to decommission at the same time. The cluster rebalancing "
+              "will only start after all of them have been move to DECOMMISSIONING_IN_PROGRESS "
+              "state.");
 
 DECLARE_string(columns);
 
@@ -83,6 +93,7 @@ using master::MasterServiceProxy;
 using master::UnregisterTServerRequestPB;
 using master::UnregisterTServerResponsePB;
 using master::TServerStateChangePB;
+using rebalance::Rebalancer;
 using rpc::RpcController;
 using tserver::QuiesceTabletServerRequestPB;
 using tserver::QuiesceTabletServerResponsePB;
@@ -253,6 +264,26 @@ Status TserverDumpMemTrackers(const RunnerContext& context) {
   return DumpMemTrackers(address, tserver::TabletServer::kDefaultPort);
 }
 
+Status TServerSetStateByUUID(const RunnerContext& context, const string& tserver_uuid,
+                             TServerStateChangePB::StateChange sc) {
+  ChangeTServerStateRequestPB req;
+  ChangeTServerStateResponsePB resp;
+  TServerStateChangePB* change = req.mutable_change();
+  change->set_uuid(tserver_uuid);
+  change->set_change(sc);
+  if (FLAGS_allow_missing_tserver) {
+    req.set_handle_missing_tserver(ChangeTServerStateRequestPB::ALLOW_MISSING_TSERVER);
+  }
+  LeaderMasterProxy proxy;
+          RETURN_NOT_OK(proxy.Init(context));
+          RETURN_NOT_OK((proxy.SyncRpc<ChangeTServerStateRequestPB, ChangeTServerStateResponsePB>(
+          req, &resp, "ChangeTServerState", &MasterServiceProxy::ChangeTServerStateAsync)));
+  if (resp.has_error()) {
+    return StatusFromPB(resp.error().status());
+  }
+  return Status::OK();
+}
+
 Status TServerSetState(const RunnerContext& context, TServerStateChangePB::StateChange sc) {
   ChangeTServerStateRequestPB req;
   ChangeTServerStateResponsePB resp;
@@ -281,10 +312,9 @@ Status ExitMaintenance(const RunnerContext& context) {
   return TServerSetState(context, TServerStateChangePB::EXIT_MAINTENANCE_MODE);
 }
 
-Status StartQuiescingTServer(const RunnerContext& context) {
-  const auto& address = FindOrDie(context.required_args, kTServerAddressArg);
+Status doStartQuiesce(HostPort hostport) {
   unique_ptr<TabletServerAdminServiceProxy> proxy;
-  RETURN_NOT_OK(BuildProxy(address, tserver::TabletServer::kDefaultPort, &proxy));
+  RETURN_NOT_OK(BuildProxy(hostport.host(), hostport.port(), &proxy));
 
   QuiesceTabletServerRequestPB req;
   req.set_quiesce(true);
@@ -301,13 +331,13 @@ Status StartQuiescingTServer(const RunnerContext& context) {
         Substitute("Tablet server not fully quiesced: $0 tablet leaders and $1 active "
                    "scanners remain", resp.num_leaders(), resp.num_active_scanners()));
   }
+
   return Status::OK();
 }
 
-Status StopQuiescingTServer(const RunnerContext& context) {
-  const auto& address = FindOrDie(context.required_args, kTServerAddressArg);
+Status doStopQuiesce(HostPort hostport) {
   unique_ptr<TabletServerAdminServiceProxy> proxy;
-  RETURN_NOT_OK(BuildProxy(address, tserver::TabletServer::kDefaultPort, &proxy));
+  RETURN_NOT_OK(BuildProxy(hostport.host(), hostport.port(), &proxy));
 
   QuiesceTabletServerRequestPB req;
   req.set_quiesce(false);
@@ -318,6 +348,27 @@ Status StopQuiescingTServer(const RunnerContext& context) {
   if (resp.has_error()) {
     return StatusFromPB(resp.error().status());
   }
+  return Status::OK();
+}
+
+Status StartQuiescingTServer(const RunnerContext& context) {
+  const auto& address = FindOrDie(context.required_args, kTServerAddressArg);
+  HostPort hostPort;
+  Status status = hostPort.ParseString(address, tserver::TabletServer::kDefaultPort);
+  RETURN_NOT_OK(status);
+  RETURN_NOT_OK(doStartQuiesce(hostPort));
+
+  return Status::OK();
+}
+
+Status StopQuiescingTServer(const RunnerContext& context) {
+  const auto& address = FindOrDie(context.required_args, kTServerAddressArg);
+  HostPort hostPort;
+  Status status = hostPort.ParseString(address, tserver::TabletServer::kDefaultPort);
+
+  RETURN_NOT_OK(status);
+  RETURN_NOT_OK(doStopQuiesce(hostPort));
+
   return Status::OK();
 }
 
@@ -340,6 +391,137 @@ Status QuiescingStatus(const RunnerContext& context) {
   table.AddColumn("Tablet Leaders", { IntToString(resp.num_leaders()) });
   table.AddColumn("Active Scanners", { IntToString(resp.num_active_scanners()) });
   return table.PrintTo(cout);
+}
+
+Status getTServerUUID(const RunnerContext& context, const string& tserver_address, string* uuid) {
+  LeaderMasterProxy proxy;
+  RETURN_NOT_OK(proxy.Init(context));
+  ListTabletServersRequestPB req;
+  ListTabletServersResponsePB resp;
+
+  RETURN_NOT_OK((proxy.SyncRpc<ListTabletServersRequestPB, ListTabletServersResponsePB>(
+  req, &resp, "ListTabletServers", &MasterServiceProxy::ListTabletServersAsync)));
+
+  if (resp.has_error()) {
+    return StatusFromPB(resp.error().status());
+  }
+
+  const auto& servers = resp.servers();
+  std::map<string, string> serverUuidToRpcAddrMap;
+
+  for (const auto& server : servers) {
+    string ts_uuid = server.instance_id().permanent_uuid();
+    string rpc_addr;
+    for (const auto& rpc_address : server.registration().rpc_addresses()) {
+      rpc_addr = Substitute("$0:$1", rpc_address.host(), rpc_address.port());
+    }
+    serverUuidToRpcAddrMap.emplace(ts_uuid, rpc_addr);
+  }
+  for (const auto& entry : serverUuidToRpcAddrMap) {
+    if (tserver_address == entry.second) {
+      *uuid = entry.first;
+    }
+  }
+
+  return Status::OK();
+}
+
+Status IsDecommissioningInProgress(const RunnerContext& context,
+                                   bool* isDecommissioningInProgress) {
+  LeaderMasterProxy proxy;
+  RETURN_NOT_OK(proxy.Init(context));
+  ListTabletServersRequestPB req;
+  ListTabletServersResponsePB resp;
+
+  RETURN_NOT_OK((proxy.SyncRpc<ListTabletServersRequestPB, ListTabletServersResponsePB>(
+      req, &resp, "ListTabletServers", &MasterServiceProxy::ListTabletServersAsync)));
+
+  if (resp.has_error()) {
+    return StatusFromPB(resp.error().status());
+  }
+
+  const auto& servers = resp.servers();
+  for (const auto& server : servers) {
+    if (server.state() == master::TServerStatePB::DECOMMISSIONING_IN_PROGRESS) {
+      *isDecommissioningInProgress = true;
+      return Status::IllegalState("Decommissioning already in progress");
+    }
+  }
+  *isDecommissioningInProgress = false;
+  return Status::OK();
+}
+
+Status EnterDecommissioning(const RunnerContext& context) {
+  const vector<string> tservers_to_decommission =
+          Split(FindOrDie(context.required_args, kTServerAddressesArg), ",", strings::SkipEmpty());
+  vector<string> tserver_uuids_to_decommission;
+  bool decommissioningInProgress = false;
+  RETURN_NOT_OK(IsDecommissioningInProgress(context, &decommissioningInProgress));
+
+  if (decommissioningInProgress) {
+    return Status::IllegalState("Decommissioning already in progress");
+  }
+
+  // set status of TServers to 'DECOMMISSIONING_IN_PROGRESS' and collect the uuids for the
+  // rebalancer
+
+  for (const auto& tserver_address : tservers_to_decommission) {
+    string tserver_uuid;
+    Status status = getTServerUUID(context, tserver_address, &tserver_uuid);
+    RETURN_NOT_OK(
+        TServerSetStateByUUID(context, tserver_uuid,
+        TServerStateChangePB::ENTER_DECOMMISSIONING_IN_PROGRESS));
+    cout << std::endl << status.CodeAsString() << std::endl;
+
+    HostPort hostport;
+    status = hostport.ParseString(tserver_address, tserver::TabletServer::kDefaultPort);
+    RETURN_NOT_OK(status);
+
+    tserver_uuids_to_decommission.emplace_back(tserver_uuid);
+
+    RETURN_NOT_OK(doStartQuiesce(hostport));
+  }
+
+  vector<string> master_addresses;
+  RETURN_NOT_OK(ParseMasterAddresses(context, &master_addresses));
+  const vector<string> table_filters = {};
+
+  // Move replicas away from TServer
+  RebalancerTool rebalancer(Rebalancer::Config(
+          tserver_uuids_to_decommission, // tserver uuids
+      master_addresses,
+      table_filters,
+      /* max_moves_per_server = */ 5,
+      /* max_staleness_interval_sec = */ 300,
+      /* max_run_time_sec = */ 0,
+      /* move_replicas_from_ignored_tservers = */ true,
+      /* move_rf1_replicas = */ true,
+      /* output_replica_distribution_details = */ true,
+      /* run_policy_fixer = */ true,
+      /* run_cross_location_rebalancing = */ true,
+      /* run_intra_location_rebalancing = */ true,
+      rebalance::Rebalancer::Config::kLoadImbalanceThreshold,
+      /* force_rebalance_replicas_on_maintenance_tservers = */ false
+      ));
+
+  // Print info on pre-rebalance distribution of replicas.
+  RETURN_NOT_OK(rebalancer.PrintStats(cout));
+
+  // Run rebalance
+  RebalancerTool::RunStatus result_status;
+  size_t moves_count;
+  RETURN_NOT_OK(rebalancer.Run(&result_status, &moves_count));
+
+  cout << std::endl << Substitute("rebalancing is complete: $0 (moved $1 replicas)",
+                                 Rebalancer::RunStatusAsString(result_status),
+                                 moves_count) << std::endl;
+
+  // After all replicas were moved away, proceed to enter decommissioned state
+  for (const auto& tserver_uuid : tserver_uuids_to_decommission) {
+    RETURN_NOT_OK(
+      TServerSetStateByUUID(context, tserver_uuid, TServerStateChangePB::ENTER_DECOMMISSIONED));
+  }
+  return Status::OK();
 }
 
 Status UnregisterTServer(const RunnerContext& context) {
@@ -494,12 +676,18 @@ unique_ptr<Mode> BuildTServerMode() {
       .Description("End maintenance of the Tablet Server.")
       .AddRequiredParameter({ kTServerIdArg, kTServerIdDesc })
       .Build();
+  unique_ptr<Action> enter_decommissioning =
+      ClusterActionBuilder("enter_decommissioning", &EnterDecommissioning)
+          .Description("Begin decommissioning on the Tablet Server.")
+          .AddRequiredParameter({ kTServerAddressesArg, kTServerAddressesDesc })
+          .AddOptionalParameter("allow_missing_tserver")
+          .Build();
   unique_ptr<Mode> state = ModeBuilder("state")
       .Description("Operate on the state of a Kudu Tablet Server")
       .AddAction(std::move(enter_maintenance))
       .AddAction(std::move(exit_maintenance))
+      .AddAction(std::move(enter_decommissioning))
       .Build();
-
   unique_ptr<Action> unregister_tserver =
       ClusterActionBuilder("unregister", &UnregisterTServer)
           .Description(

@@ -109,6 +109,9 @@ class TSManager {
   // Get the live TS count.
   int GetLiveCount() const;
 
+  // Get decommissioned TS count.
+  int GetDecommissionedCount() const;
+
   // Sets the tserver state for the given tserver, persisting it to disk.
   //
   // If removing a tserver from maintenance mode, this also sets that all

@@ -268,9 +268,27 @@ TEST_F(TServerStateTest, TestConcurrentSetTServerState) {
   }
 }
 
+class ParameterizedTServerStateTest : public TServerStateTest,
+                                      public ::testing::WithParamInterface<TServerStatePB> {
+ public:
+  TServerStatePB testStatePB;
+  void SetUp() override {
+    KuduTest::SetUp();
+    NO_FATALS(ResetMaster());
+    this->testStatePB = GetParam();
+  }
+};
+
+INSTANTIATE_TEST_SUITE_P(, ParameterizedTServerStateTest,
+                             ::testing::Values(
+                                 TServerStatePB::MAINTENANCE_MODE,
+                                 TServerStatePB::DECOMMISSIONED
+                                 ));
+
+
 // Test that tablet servers that are in maintenance mode don't get tablet
 // replicas placed on them.
-TEST_F(TServerStateTest, MaintenanceModeTServerDoesntGetNewReplicas) {
+TEST_P(ParameterizedTServerStateTest, ParameterizedTServerDoesntGetNewReplicas) {
   const int kNumTServers = 4;
   vector<string> tserver_ids;
 
@@ -281,9 +299,14 @@ TEST_F(TServerStateTest, MaintenanceModeTServerDoesntGetNewReplicas) {
     tserver_ids.emplace_back(std::move(tserver_id));
   }
 
-  // Put one of the tablet servers in maintenance mode and create a few tables.
+  // Change the state of one of the tablet servers and create a few tables.
   const string& first_maintenance_tserver = tserver_ids[0];
-  ASSERT_OK(SetTServerState(first_maintenance_tserver, TServerStatePB::MAINTENANCE_MODE));
+  if (this->testStatePB == TServerStatePB::DECOMMISSIONED) {
+    // we need to go through deco_in_prog to be able to set this state
+    ASSERT_OK(SetTServerState(first_maintenance_tserver,
+                              TServerStatePB::DECOMMISSIONING_IN_PROGRESS));
+  }
+  ASSERT_OK(SetTServerState(first_maintenance_tserver, this->testStatePB));
   const int kNumTables = 10;
   for (int i = 0; i < kNumTables; i++) {
     ASSERT_OK(CreateTable(Substitute("table-$0", i)));
@@ -301,10 +324,14 @@ TEST_F(TServerStateTest, MaintenanceModeTServerDoesntGetNewReplicas) {
       ASSERT_LT(0, desc->RecentReplicaCreations());
     }
   }
-  // If we put another tserver in maintenance mode, we'll only have two
+  // If we put another tserver in one of the applicable states, we'll only have two
   // remaining tservers, and won't be able to create new tables with the
   // default replication factor.
-  ASSERT_OK(SetTServerState(tserver_ids[1], TServerStatePB::MAINTENANCE_MODE));
+  if (this->testStatePB == TServerStatePB::DECOMMISSIONED) {
+    // we need to go through deco_in_prog to be able to set this state
+    ASSERT_OK(SetTServerState(tserver_ids[1], TServerStatePB::DECOMMISSIONING_IN_PROGRESS));
+  }
+  ASSERT_OK(SetTServerState(tserver_ids[1], this->testStatePB));
   string sad_table_id;
   Status s = CreateTable("sad-table");
   ASSERT_TRUE(s.IsInvalidArgument()) << s.ToString();
@@ -350,6 +377,77 @@ TEST_F(TServerStateTest, TestRPCs) {
     ASSERT_FALSE(resp.has_error());
     ASSERT_EQ(TServerStatePB::MAINTENANCE_MODE, ts_manager_->GetTServerState(kTServer));
   }
+}
+
+TEST_F(TServerStateTest, TestDecommissioningStates) {
+  // none -> deco_in_prog -> deco -> none
+  ASSERT_EQ(TServerStatePB::NONE, ts_manager_->GetTServerState(kTServer));
+
+  ASSERT_OK(SetTServerState(kTServer, TServerStatePB::DECOMMISSIONING_IN_PROGRESS));
+  ASSERT_EQ(TServerStatePB::DECOMMISSIONING_IN_PROGRESS, ts_manager_->GetTServerState(kTServer));
+
+  ASSERT_OK(SetTServerState(kTServer, TServerStatePB::DECOMMISSIONED));
+  ASSERT_EQ(TServerStatePB::DECOMMISSIONED, ts_manager_->GetTServerState(kTServer));
+
+  ASSERT_OK(SetTServerState(kTServer, TServerStatePB::NONE));
+  ASSERT_EQ(TServerStatePB::NONE, ts_manager_->GetTServerState(kTServer));
+  ASSERT_OK(SendHeartbeat(kTServer));
+  ASSERT_EQ(1, ts_manager_->GetCount());
+  ASSERT_EQ(TServerStatePB::NONE, ts_manager_->GetTServerState(kTServer));
+
+  // Exiting the tserver state should be a no-op.
+  ASSERT_OK(SetTServerState(kTServer, TServerStatePB::NONE));
+  ASSERT_EQ(TServerStatePB::NONE, ts_manager_->GetTServerState(kTServer));
+
+  // Moving TS to DECOMMISSIONED state that's already DECOMMISSIONED mode
+  // should also no-op.
+  ASSERT_OK(SetTServerState(kTServer, TServerStatePB::DECOMMISSIONING_IN_PROGRESS));
+  ASSERT_EQ(TServerStatePB::DECOMMISSIONING_IN_PROGRESS, ts_manager_->GetTServerState(kTServer));
+  ASSERT_OK(SetTServerState(kTServer, TServerStatePB::DECOMMISSIONED));
+  ASSERT_EQ(TServerStatePB::DECOMMISSIONED, ts_manager_->GetTServerState(kTServer));
+  ASSERT_OK(SetTServerState(kTServer, TServerStatePB::DECOMMISSIONED));
+  ASSERT_EQ(TServerStatePB::DECOMMISSIONED, ts_manager_->GetTServerState(kTServer));
+}
+
+TEST_F(TServerStateTest, TestCannotSkipDecommissioningInProgress) {
+  // none -> decommissioned should fail
+  ASSERT_EQ(TServerStatePB::NONE, ts_manager_->GetTServerState(kTServer));
+
+  Status status = SetTServerState(kTServer, TServerStatePB::DECOMMISSIONED);
+  ASSERT_TRUE(status.IsIllegalState());
+}
+
+TEST_F(TServerStateTest, TestSwitchingBetweenServerStates) {
+  // First scenario:
+  // NONE->MAINTENANCE->DECOMMISSIONING_IN_PROGRESS->DECOMMISSIONED->MAINTENANCE->NONE
+  ASSERT_OK(SetTServerState(kTServer, TServerStatePB::MAINTENANCE_MODE));
+  ASSERT_EQ(TServerStatePB::MAINTENANCE_MODE, ts_manager_->GetTServerState(kTServer));
+
+  ASSERT_OK(SetTServerState(kTServer, TServerStatePB::DECOMMISSIONING_IN_PROGRESS));
+  ASSERT_EQ(TServerStatePB::DECOMMISSIONING_IN_PROGRESS, ts_manager_->GetTServerState(kTServer));
+
+  ASSERT_OK(SetTServerState(kTServer, TServerStatePB::DECOMMISSIONED));
+  ASSERT_EQ(TServerStatePB::DECOMMISSIONED, ts_manager_->GetTServerState(kTServer));
+
+  ASSERT_OK(SetTServerState(kTServer, TServerStatePB::MAINTENANCE_MODE));
+  ASSERT_EQ(TServerStatePB::MAINTENANCE_MODE, ts_manager_->GetTServerState(kTServer));
+
+  ASSERT_OK(SetTServerState(kTServer, TServerStatePB::NONE));
+  ASSERT_EQ(TServerStatePB::NONE, ts_manager_->GetTServerState(kTServer));
+
+  // Second scenario:
+  // NONE->DECOMMISSIONING_IN_PROGRESS->DECOMMISSIONED-->MAINTENANCE->NONE
+  ASSERT_OK(SetTServerState(kTServer, TServerStatePB::DECOMMISSIONING_IN_PROGRESS));
+  ASSERT_EQ(TServerStatePB::DECOMMISSIONING_IN_PROGRESS, ts_manager_->GetTServerState(kTServer));
+
+  ASSERT_OK(SetTServerState(kTServer, TServerStatePB::DECOMMISSIONED));
+  ASSERT_EQ(TServerStatePB::DECOMMISSIONED, ts_manager_->GetTServerState(kTServer));
+
+  ASSERT_OK(SetTServerState(kTServer, TServerStatePB::MAINTENANCE_MODE));
+  ASSERT_EQ(TServerStatePB::MAINTENANCE_MODE, ts_manager_->GetTServerState(kTServer));
+
+  ASSERT_OK(SetTServerState(kTServer, TServerStatePB::NONE));
+  ASSERT_EQ(TServerStatePB::NONE, ts_manager_->GetTServerState(kTServer));
 }
 
 } // namespace master

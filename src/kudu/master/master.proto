@@ -1028,7 +1028,6 @@ message ListTabletServersResponsePB {
 }
 
 // Representation of the state of a tablet server.
-// TODO(KUDU-1827): add state for decommissioning.
 enum TServerStatePB {
   // Default value for backwards compatibility.
   UNKNOWN_STATE = 0;
@@ -1039,6 +1038,12 @@ enum TServerStatePB {
   // New replicas are not added to the tserver, and failed replicas on the
   // tserver are not re-replicated.
   MAINTENANCE_MODE = 2;
+
+  // At any time only one TS should be in this state to avoid resource
+  // contention and unnecessary moves when decommissioning multiple instances.
+  DECOMMISSIONING_IN_PROGRESS = 3;
+
+  DECOMMISSIONED = 4;
 }
 
 message TServerStateChangePB {
@@ -1054,6 +1059,17 @@ message TServerStateChangePB {
     // Transitions from being in maintenance mode to having no tserver state. If
     // the tserver already has no state, this is a no-op.
     EXIT_MAINTENANCE_MODE = 2;
+
+    // Transitions from having no state to being in decommissioning in progress mode.
+    // At any point in time there should only be max 1 TS in this state.
+    ENTER_DECOMMISSIONING_IN_PROGRESS = 3;
+
+    // After finishing the decommissioning process, the TS transitions into being decommissioned.
+    ENTER_DECOMMISSIONED = 4;
+
+    // Transitions from being decommissioned to having no tserver state. If
+    // the tserver already has no state, this is a no-op.
+    EXIT_DECOMMISSIONING = 5;
   }
 
   // The tserver UUID on which to apply the state change.

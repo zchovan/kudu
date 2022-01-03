@@ -42,6 +42,7 @@ struct ClusterRawInfo {
   std::vector<cluster_summary::TableSummary> table_summaries;
   std::vector<cluster_summary::TabletSummary> tablet_summaries;
   std::unordered_set<std::string> tservers_in_maintenance_mode;
+  std::unordered_set<std::string> tservers_in_decommissioning;
 };
 
 // A class implementing logic for Kudu cluster rebalancing.
@@ -158,7 +159,7 @@ class Rebalancer {
   enum class RunStatus {
     UNKNOWN,
     CLUSTER_IS_BALANCED,
-    TIMED_OUT,
+    TIMED_OUT
   };
 
   // A helper type: key is tablet UUID which corresponds to value.tablet_uuid.
@@ -214,6 +215,8 @@ class Rebalancer {
                                        const MovesInProgress& moves_in_progress,
                                        const std::unordered_set<std::string>& tservers_to_empty,
                                        TServersToEmptyMap* tservers_to_empty_map);
+
+  static std::string RunStatusAsString(Rebalancer::RunStatus run_status);
 
  protected:
   // Helper class to find and schedule next available rebalancing move operation
@@ -295,6 +298,7 @@ Status SelectReplicaToMove(
     std::vector<std::string> tablet_ids,
     std::unordered_set<std::string>* tablets_in_move,
     std::vector<Rebalancer::ReplicaMove>* replica_moves);
+
 
 } // namespace rebalance
 } // namespace kudu

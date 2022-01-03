@@ -31,8 +31,7 @@ set(INTEGRATION_TESTS_SRCS
   mini_cluster_fs_inspector.cc
   raft_consensus-itest-base.cc
   test_workload.cc
-  ts_itest-base.cc
-)
+  ts_itest-base.cc)
 
 add_library(itest_util ${INTEGRATION_TESTS_SRCS})
 target_link_libraries(itest_util

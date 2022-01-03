@@ -475,7 +475,7 @@ Status AutoRebalancerTask::BuildClusterRawInfo(
   // was not available before, is available for tablet placement again.
   TSDescriptorVector descriptors;
   ts_manager_->GetDescriptorsAvailableForPlacement(&descriptors);
-  if (descriptors.size() != ts_manager_->GetLiveCount()) {
+  if (descriptors.size() != ts_manager_->GetLiveCount() + ts_manager_->GetDecommissionedCount()) {
     return Status::IllegalState(Substitute("not all tservers available for tablet placement"));
   }
   tserver_uuids.reserve(descriptors.size());

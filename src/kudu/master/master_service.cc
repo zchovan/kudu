@@ -164,6 +164,15 @@ bool StateChangeToTServerState(const TServerStateChangePB::StateChange& change,
     case TServerStateChangePB::EXIT_MAINTENANCE_MODE:
       *to_state = TServerStatePB::NONE;
       return true;
+    case TServerStateChangePB::ENTER_DECOMMISSIONING_IN_PROGRESS:
+      *to_state = TServerStatePB::DECOMMISSIONING_IN_PROGRESS;
+      return true;
+    case TServerStateChangePB::ENTER_DECOMMISSIONED:
+      *to_state = TServerStatePB::DECOMMISSIONED;
+      return true;
+    case TServerStateChangePB::EXIT_DECOMMISSIONING:
+      *to_state = TServerStatePB::NONE;
+      return true;
     default:
       return false;
   }

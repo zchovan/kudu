@@ -23,9 +23,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <fstream>
 #include <functional>
 #include <initializer_list>
+#include <iostream>
 #include <iterator>
 #include <map>
 #include <memory>
@@ -8253,6 +8253,156 @@ TEST_F(ToolTest, TestStartEndMaintenanceMode) {
     ASSERT_EQ(TServerStatePB::NONE, ts_manager->GetTServerState(ts_uuid));
     ASSERT_EQ(TServerStatePB::NONE, ts_manager->GetTServerState(kDummyUuid));
   }
+}
+
+TEST_F(ToolTest, SingleTServerDecommissioning) {
+  InternalMiniClusterOptions opts;
+  opts.num_masters = 1;
+  opts.num_tablet_servers = 3;
+  NO_FATALS(StartMiniCluster(std::move(opts)));
+
+  MiniMaster* mini_master = mini_cluster_->mini_master();
+  const string& master_addr = mini_master->bound_rpc_addr().ToString();
+  MiniTabletServer* mini_ts = mini_cluster_->mini_tablet_server(0);
+  const string& ts_uuid = mini_ts->uuid();
+  const string& ts_hostport = mini_ts->bound_rpc_addr().ToString();
+  TSManager* ts_manager = mini_master->master()->ts_manager();
+  string output;
+
+  // First, do a sanity check that our tserver has no state at first.
+  ASSERT_EQ(TServerStatePB::NONE, ts_manager->GetTServerState(ts_uuid));
+
+  // create table
+  NO_FATALS(CreateTableWithFlushedData("dummy_table", mini_cluster_.get(), 1, 3));
+
+  // add tserver
+  ASSERT_OK(mini_cluster_->AddTabletServer());
+  ASSERT_EQ(4, mini_cluster_->num_tablet_servers());
+
+  // start decommissioning a tserver with replicas
+  NO_FATALS(RunActionStdoutString(
+          Substitute("tserver list $0 -columns=uuid,state,rpc-addresses",master_addr), &output));
+
+  std::cout << std::endl << output << std::endl;
+
+  NO_FATALS(RunActionStdoutString(
+      Substitute("tserver state enter_decommissioning $0 $1",
+                 master_addr, ts_hostport), &output));
+  std::cout << std::endl << output << std::endl;
+
+  ASSERT_EQ(TServerStatePB::DECOMMISSIONED, ts_manager->GetTServerState(ts_uuid));
+  ASSERT_EQ(true, mini_ts->server()->quiescing());
+
+  // confirm state
+  NO_FATALS(RunActionStdoutString(
+      Substitute("tserver list $0 -columns=uuid,state,rpc-addresses",
+                 master_addr),
+      &output));
+
+  ASSERT_STR_CONTAINS(output, Substitute("$0 | DECOMMISSIONED", ts_uuid));
+
+  // check that tserver is quiesced
+  NO_FATALS(RunActionStdoutString(
+      Substitute("tserver quiesce status $0", ts_hostport), &output));
+
+  ASSERT_STR_MATCHES(output,
+                     " Quiescing | Tablet Leaders | Active Scanners\n"
+                     "-----------+----------------+-----------------\n"
+                     " true      |       0        |       0");
+
+  // check table has correct number of replicas
+  NO_FATALS(RunActionStdoutString(Substitute("cluster ksck $0", master_addr), &output));
+
+  ASSERT_STR_CONTAINS(output,
+      "Summary by table\n"
+      "    Name     | RF | Status  | Total Tablets | Healthy | Recovering | Under-replicated | "
+      "Unavailable\n"
+      "-------------+----+---------+---------------+---------+------------+------------------+"
+      "-------------\n"
+      " dummy_table | 3  | HEALTHY | 1             | 1       | 0          | 0                | 0" );
+}
+
+TEST_F(ToolTest, MultiTServerDecommissioning) {
+  InternalMiniClusterOptions opts;
+  opts.num_masters = 1;
+  opts.num_tablet_servers = 3;
+  NO_FATALS(StartMiniCluster(std::move(opts)));
+
+  MiniMaster* mini_master = mini_cluster_->mini_master();
+  const string& master_addr = mini_master->bound_rpc_addr().ToString();
+  MiniTabletServer* mini_ts_0 = mini_cluster_->mini_tablet_server(0);
+  const string& ts_uuid_0 = mini_ts_0->uuid();
+  const string& ts_hostport_0 = mini_ts_0->bound_rpc_addr().ToString();
+  MiniTabletServer* mini_ts_1 = mini_cluster_->mini_tablet_server(1);
+  const string& ts_uuid_1 = mini_ts_1->uuid();
+  const string& ts_hostport_1 = mini_ts_1->bound_rpc_addr().ToString();
+  TSManager* ts_manager = mini_master->master()->ts_manager();
+  string output;
+
+  // First, do a sanity check that our tserver has no state at first.
+  ASSERT_EQ(TServerStatePB::NONE, ts_manager->GetTServerState(ts_uuid_0));
+
+  // create table
+  NO_FATALS(CreateTableWithFlushedData("dummy_table", mini_cluster_.get(), 1, 3));
+
+  // add tserver
+  ASSERT_OK(mini_cluster_->AddTabletServer());
+  ASSERT_OK(mini_cluster_->AddTabletServer());
+  ASSERT_EQ(5, mini_cluster_->num_tablet_servers());
+
+  // start decommissioning a tserver with replicas
+  NO_FATALS(RunActionStdoutString(
+          Substitute("tserver list $0 -columns=uuid,state,rpc-addresses",master_addr), &output));
+
+  std::cout << std::endl << output << std::endl;
+
+  NO_FATALS(RunActionStdoutString(
+          Substitute("tserver state enter_decommissioning $0 $1,$2",
+                     master_addr, ts_hostport_0, ts_hostport_1), &output));
+  std::cout << std::endl << output << std::endl;
+
+  ASSERT_EQ(TServerStatePB::DECOMMISSIONED, ts_manager->GetTServerState(ts_uuid_0));
+  ASSERT_EQ(TServerStatePB::DECOMMISSIONED, ts_manager->GetTServerState(ts_uuid_1));
+  ASSERT_EQ(true, mini_ts_0->server()->quiescing());
+  ASSERT_EQ(true, mini_ts_1->server()->quiescing());
+
+  // confirm state
+  NO_FATALS(RunActionStdoutString(
+          Substitute("tserver list $0 -columns=uuid,state,rpc-addresses",
+                     master_addr),
+          &output));
+
+  ASSERT_STR_CONTAINS(output, Substitute("$0 | DECOMMISSIONED", ts_uuid_0));
+  ASSERT_STR_CONTAINS(output, Substitute("$0 | DECOMMISSIONED", ts_uuid_1));
+
+  // check that tserver is quiesced
+  NO_FATALS(RunActionStdoutString(
+          Substitute("tserver quiesce status $0", ts_hostport_0), &output));
+
+  ASSERT_STR_MATCHES(output,
+                     " Quiescing | Tablet Leaders | Active Scanners\n"
+                     "-----------+----------------+-----------------\n"
+                     " true      |       0        |       0");
+
+          NO_FATALS(RunActionStdoutString(
+                  Substitute("tserver quiesce status $0", ts_hostport_1), &output));
+
+          ASSERT_STR_MATCHES(output,
+                             " Quiescing | Tablet Leaders | Active Scanners\n"
+                             "-----------+----------------+-----------------\n"
+                             " true      |       0        |       0");
+
+  // check table has correct number of replicas
+  NO_FATALS(RunActionStdoutString(Substitute("cluster ksck $0", master_addr), &output));
+
+  ASSERT_STR_CONTAINS(output,
+                      "Summary by table\n"
+                      "    Name     | RF | Status  | Total Tablets | Healthy | Recovering | "
+                      "Under-replicated | Unavailable\n"
+                      "-------------+----+---------+---------------+---------+------------+"
+                      "------------------+-------------\n"
+                      " dummy_table | 3  | HEALTHY | 1             | 1       | 0          | "
+                      "0                | 0" );
 }
 
 TEST_F(ToolTest, TestFsRemoveDataDirWithTombstone) {
