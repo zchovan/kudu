@@ -1,0 +1,92 @@
+From 4a82a856d281e78c2af8c0ea35f0b6b8b4688598 Mon Sep 17 00:00:00 2001
+From: Longwu Ou <xulongwu4@gmail.com>
+Date: Sun, 26 Apr 2020 22:57:58 -0400
+Subject: [PATCH] Use NULL to indicate uninitialized VLOG_IS_ON site.
+
+---
+ src/glog/vlog_is_on.h.in      | 15 ++++-----------
+ src/vlog_is_on.cc             |  2 --
+ src/windows/glog/vlog_is_on.h | 15 ++++-----------
+ 3 files changed, 8 insertions(+), 24 deletions(-)
+
+diff --git a/src/glog/vlog_is_on.h.in b/src/glog/vlog_is_on.h.in
+index 3f4c4a32a..4a5bbdf0c 100644
+--- a/src/glog/vlog_is_on.h.in
++++ b/src/glog/vlog_is_on.h.in
+@@ -81,12 +81,11 @@
+ // parsing of --vmodule flag and/or SetVLOGLevel calls.
+ #define VLOG_IS_ON(verboselevel)                                \
+   __extension__  \
+-  ({ static @ac_google_namespace@::int32* vlocal__ = &@ac_google_namespace@::kLogSiteUninitialized;           \
++  ({ static @ac_google_namespace@::int32* vlocal__ = NULL;           \
+      @ac_google_namespace@::int32 verbose_level__ = (verboselevel);                    \
+-     (*vlocal__ >= verbose_level__) &&                          \
+-     ((vlocal__ != &@ac_google_namespace@::kLogSiteUninitialized) ||                   \
+-      (@ac_google_namespace@::InitVLOG3__(&vlocal__, &FLAGS_v,                         \
+-                   __FILE__, verbose_level__))); })
++     (vlocal__ == NULL ? @ac_google_namespace@::InitVLOG3__(&vlocal__, &FLAGS_v, \
++                        __FILE__, verbose_level__) : *vlocal__ >= verbose_level__); \
++  })
+ #else
+ // GNU extensions not available, so we do not support --vmodule.
+ // Dynamic value of FLAGS_v always controls the logging level.
+@@ -106,12 +105,6 @@ extern GOOGLE_GLOG_DLL_DECL int SetVLOGLevel(const char* module_pattern,
+ 
+ // Various declarations needed for VLOG_IS_ON above: =========================
+ 
+-// Special value used to indicate that a VLOG_IS_ON site has not been
+-// initialized.  We make this a large value, so the common-case check
+-// of "*vlocal__ >= verbose_level__" in VLOG_IS_ON definition
+-// passes in such cases and InitVLOG3__ is then triggered.
+-extern @ac_google_namespace@::int32 kLogSiteUninitialized;
+-
+ // Helper routine which determines the logging info for a particalur VLOG site.
+ //   site_flag     is the address of the site-local pointer to the controlling
+ //                 verbosity level
+diff --git a/src/vlog_is_on.cc b/src/vlog_is_on.cc
+index e8fdbae7d..e1b257faf 100644
+--- a/src/vlog_is_on.cc
++++ b/src/vlog_is_on.cc
+@@ -105,8 +105,6 @@ GOOGLE_GLOG_DLL_DECL bool SafeFNMatch_(const char* pattern,
+ 
+ using glog_internal_namespace_::SafeFNMatch_;
+ 
+-int32 kLogSiteUninitialized = 1000;
+-
+ // List of per-module log levels from FLAGS_vmodule.
+ // Once created each element is never deleted/modified
+ // except for the vlog_level: other threads will read VModuleInfo blobs
+diff --git a/src/windows/glog/vlog_is_on.h b/src/windows/glog/vlog_is_on.h
+index 409a4011b..3ea36b863 100755
+--- a/src/windows/glog/vlog_is_on.h
++++ b/src/windows/glog/vlog_is_on.h
+@@ -85,12 +85,11 @@
+ // parsing of --vmodule flag and/or SetVLOGLevel calls.
+ #define VLOG_IS_ON(verboselevel)                                \
+   __extension__  \
+-  ({ static google::int32* vlocal__ = &google::kLogSiteUninitialized;           \
++  ({ static @ac_google_namespace@::int32* vlocal__ = NULL;           \
+      google::int32 verbose_level__ = (verboselevel);                    \
+-     (*vlocal__ >= verbose_level__) &&                          \
+-     ((vlocal__ != &google::kLogSiteUninitialized) ||                   \
+-      (google::InitVLOG3__(&vlocal__, &FLAGS_v,                         \
+-                   __FILE__, verbose_level__))); })
++     (vlocal__ == NULL ? @ac_google_namespace@::InitVLOG3__(&vlocal__, &FLAGS_v, \
++                        __FILE__, verbose_level__) : *vlocal__ >= verbose_level__); \
++  })
+ #else
+ // GNU extensions not available, so we do not support --vmodule.
+ // Dynamic value of FLAGS_v always controls the logging level.
+@@ -110,12 +109,6 @@ extern GOOGLE_GLOG_DLL_DECL int SetVLOGLevel(const char* module_pattern,
+ 
+ // Various declarations needed for VLOG_IS_ON above: =========================
+ 
+-// Special value used to indicate that a VLOG_IS_ON site has not been
+-// initialized.  We make this a large value, so the common-case check
+-// of "*vlocal__ >= verbose_level__" in VLOG_IS_ON definition
+-// passes in such cases and InitVLOG3__ is then triggered.
+-extern google::int32 kLogSiteUninitialized;
+-
+ // Helper routine which determines the logging info for a particalur VLOG site.
+ //   site_flag     is the address of the site-local pointer to the controlling
+ //                 verbosity level

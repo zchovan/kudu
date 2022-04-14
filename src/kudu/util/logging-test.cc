@@ -40,6 +40,8 @@
 #include "kudu/util/test_macros.h"  // IWYU pragma: keep
 #include "kudu/util/test_util.h"
 
+typedef uint64_t TypedefedInt;
+
 using std::string;
 using std::vector;
 

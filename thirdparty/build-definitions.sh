@@ -432,6 +432,37 @@ build_libunwind() {
 }
 
 build_glog() {
+  build_glog06
+}
+
+build_glog06() {
+  GLOG_SHARED_BDIR=$TP_BUILD_DIR/$GLOG_NAME.shared$MODE_SUFFIX
+  GLOG_STATIC_BDIR=$TP_BUILD_DIR/$GLOG_NAME.static$MODE_SUFFIX
+  for SHARED in ON OFF; do
+    if [ $SHARED = "ON" ]; then
+      GLOG_BDIR=$GLOG_SHARED_BDIR
+    else
+      GLOG_BDIR=$GLOG_STATIC_BDIR
+    fi
+    mkdir -p $GLOG_BDIR
+    pushd $GLOG_BDIR
+    rm -rf CMakeCache.txt CMakeFiles/
+    cmake \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_INSTALL_PREFIX=$PREFIX \
+      -DCMAKE_CXX_FLAGS="$EXTRA_CXXFLAGS" \
+      -DCMAKE_EXE_LINKER_FLAGS="$EXTRA_LDFLAGS $EXTRA_LIBS" \
+      -DCMAKE_MODULE_LINKER_FLAGS="$EXTRA_LDFLAGS $EXTRA_LIBS" \
+      -DCMAKE_SHARED_LINKER_FLAGS="$EXTRA_LDFLAGS $EXTRA_LIBS" \
+      -DBUILD_SHARED_LIBS=$SHARED \
+      $EXTRA_CMAKE_FLAGS \
+      $GLOG_SOURCE
+    ${NINJA:-make} -j$PARALLEL $EXTRA_MAKEFLAGS install
+    popd
+  done
+}
+
+build_glog03() {
   GLOG_BDIR=$TP_BUILD_DIR/$GLOG_NAME$MODE_SUFFIX
   mkdir -p $GLOG_BDIR
   pushd $GLOG_BDIR
