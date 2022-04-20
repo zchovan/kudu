@@ -128,7 +128,7 @@ class JWKSetParser {
       Status status = ParseKey(key);
       if (!status.ok()) {
         Status parse_status = Status::InvalidArgument(Substitute("parsing key #$0, ", key_idx));
-        return parse_status.CloneAndAppend(status.ToString());
+        return parse_status.CloneAndAppend(status.message());
       }
     }
     return Status::OK();

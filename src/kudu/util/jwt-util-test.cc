@@ -17,11 +17,14 @@
 //
 // Copied from Impala and adapted to Kudu.
 
-#include <cstdio> // file stuff
+#include <cstdio>
+#include <memory>
+#include <vector>
 
 #include <gtest/gtest.h>
 
 #include "kudu/gutil/strings/substitute.h"
+#include "kudu/server/webserver.h"
 #include "kudu/util/jwt-util-internal.h"
 #include "kudu/util/jwt-util.h"
 #include "kudu/util/test_macros.h"
@@ -30,6 +33,8 @@
 namespace kudu {
 
 using std::string;
+using std::unique_ptr;
+using std::vector;
 using strings::Substitute;
 
 std::string rsa_priv_key_pem = R"(-----BEGIN PRIVATE KEY-----
@@ -1141,6 +1146,72 @@ TEST(JwtUtilTest, VerifyJwtFailExpiredToken) {
   ASSERT_TRUE(status.ToString().find("Verification failed, error: token expired")
       != std::string::npos)
       << " Actual error: " << status.ToString();
+}
+
+namespace {
+
+void JWKSHandler(const Webserver::WebRequest& /*req*/,
+                 Webserver::PrerenderedWebResponse* resp) {
+  resp->output <<
+      Substitute(jwks_rsa_file_format, kid_1, "RS256",
+          rsa_pub_key_jwk_n, rsa_pub_key_jwk_e, kid_2, "RS256", rsa_invalid_pub_key_jwk_n,
+          rsa_pub_key_jwk_e);
+  resp->status_code = HttpStatusCode::Ok;
+}
+
+class JWKSMockServer {
+ public:
+  Status Start() {
+    WebserverOptions opts;
+    opts.port = 0;
+    webserver_.reset(new Webserver(std::move(opts)));
+    webserver_->RegisterPrerenderedPathHandler("/jwks", "JWKS", JWKSHandler,
+                                               /*is_styled*/false, /*is_on_nav_bar*/false);
+    RETURN_NOT_OK(webserver_->Start());
+    vector<Sockaddr> addrs;
+    RETURN_NOT_OK(webserver_->GetBoundAddresses(&addrs));
+    RETURN_NOT_OK(addr_.ParseString("127.0.0.1", addrs[0].port()));
+    url_ = Substitute("http://$0/jwks", addr_.ToString());
+    return Status::OK();
+  }
+
+  const string& url() const {
+    return url_;
+  }
+ private:
+  unique_ptr<Webserver> webserver_;
+  string url_;
+  Sockaddr addr_;
+};
+
+} // anonymous namespace
+
+TEST(JwtUtilTest, VerifyJWKSUrl) {
+  JWKSMockServer jwks_server;
+  ASSERT_OK(jwks_server.Start());
+
+  JWTHelper jwt_helper;
+  ASSERT_OK(jwt_helper.Init(jwks_server.url(), false));
+  auto encoded_token =
+      jwt::create()
+          .set_issuer("auth0")
+          .set_type("JWS")
+          .set_algorithm("RS256")
+          .set_key_id(kid_1)
+          .set_payload_claim("username", picojson::value("impala"))
+          .sign(jwt::algorithm::rs256(rsa_pub_key_pem, rsa_priv_key_pem, "", ""));
+  ASSERT_EQ(
+      "eyJhbGciOiJSUzI1NiIsImtpZCI6InB1YmxpYzpjNDI0YjY3Yi1mZTI4LTQ1ZDctYjAxNS1mNzlkYTUwYj"
+      "ViMjEiLCJ0eXAiOiJKV1MifQ.eyJpc3MiOiJhdXRoMCIsInVzZXJuYW1lIjoiaW1wYWxhIn0.OW5H2SClL"
+      "lsotsCarTHYEbqlbRh43LFwOyo9WubpNTwE7hTuJDsnFoVrvHiWI02W69TZNat7DYcC86A_ogLMfNXagHj"
+      "lMFJaRnvG5Ekag8NRuZNJmHVqfX-qr6x7_8mpOdU554kc200pqbpYLhhuK4Qf7oT7y9mOrtNrUKGDCZ0Q2"
+      "y_mizlbY6SMg4RWqSz0RQwJbRgXIWSgcbZd0GbD_MQQ8x7WRE4nluU-5Fl4N2Wo8T9fNTuxALPiuVeIczO"
+      "25b5n4fryfKasSgaZfmk0CoOJzqbtmQxqiK9QNSJAiH2kaqMwLNgAdgn8fbd-lB1RAEGeyPH8Px8ipqcKs"
+      "Pk0bg",
+      encoded_token);
+  JWTHelper::UniqueJWTDecodedToken decoded_token;
+  ASSERT_OK(jwt_helper.Decode(encoded_token, decoded_token));
+  ASSERT_OK(jwt_helper.Verify(decoded_token.get()));
 }
 
 } // namespace kudu
