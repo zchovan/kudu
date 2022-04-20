@@ -48,6 +48,20 @@ class Promise {
     return val_;
   }
 
+  const T& Get(int64_t timeout_millis, bool* timed_out) const {
+    if (latch_.WaitFor(MonoDelta::FromMilliseconds(timeout_millis))) {
+      return val_;
+      *timed_out = false;
+    } else {
+      *timed_out = true;
+    }
+    __builtin_unreachable();
+  }
+
+  bool IsSet() const {
+    return latch_.count() == 0;
+  }
+
   // Wait for the promised value to become available with the given timeout.
   //
   // Returns NULL if the timeout elapses before a value is available.
