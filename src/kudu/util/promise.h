@@ -48,6 +48,10 @@ class Promise {
     return val_;
   }
 
+  bool IsSet() const {
+    return latch_.count() == 0;
+  }
+
   // Wait for the promised value to become available with the given timeout.
   //
   // Returns NULL if the timeout elapses before a value is available.
@@ -56,9 +60,8 @@ class Promise {
   const T* WaitFor(const MonoDelta& delta) const {
     if (latch_.WaitFor(delta)) {
       return &val_;
-    } else {
-      return NULL;
     }
+    return NULL;
   }
 
   // Set the value of this promise.
