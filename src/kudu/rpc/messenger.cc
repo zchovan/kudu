@@ -45,6 +45,7 @@
 #include "kudu/security/tls_context.h"
 #include "kudu/security/token_verifier.h"
 #include "kudu/util/flags.h"
+#include "kudu/util/jwt.h"
 #include "kudu/util/metrics.h"
 #include "kudu/util/monotime.h"
 #include "kudu/util/net/socket.h"
@@ -93,6 +94,7 @@ Status MessengerBuilder::Build(shared_ptr<Messenger>* msgr) {
   // Note: can't use make_shared() as it doesn't support custom deleters.
   shared_ptr<Messenger> new_msgr(new Messenger(*this),
                                  std::mem_fn(&Messenger::AllExternalReferencesDropped));
+  new_msgr->jwt_verifier_ = std::move(jwt_verifier_);
   RETURN_NOT_OK(ParseTriState("--rpc_authentication",
                               rpc_authentication_,
                               &new_msgr->authentication_));
@@ -319,6 +321,7 @@ Messenger::Messenger(const MessengerBuilder &bld)
                                             bld.rpc_tls_min_protocol_,
                                             bld.rpc_tls_excluded_protocols_)),
       token_verifier_(new security::TokenVerifier),
+      jwt_verifier_(new SimpleJwtVerifier),
       rpcz_store_(new RpczStore),
       metric_entity_(bld.metric_entity_),
       rpc_negotiation_timeout_ms_(bld.rpc_negotiation_timeout_ms_),

@@ -893,4 +893,11 @@ Status JWTHelper::GetCustomClaimUsername(const JWTDecodedToken* decoded_token,
   return status;
 }
 
+Status KeyBasedJwtVerifier::VerifyToken(const string& bytes_raw, string* subject) const {
+  JWTHelper::UniqueJWTDecodedToken decoded_token;
+  RETURN_NOT_OK(JWTHelper::Decode(bytes_raw, decoded_token));
+  *subject = decoded_token->decoded_jwt_.get_subject();
+  return Status::OK();
+}
+
 } // namespace kudu

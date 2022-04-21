@@ -86,6 +86,7 @@ const char* AuthenticationTypeToString(AuthenticationType t) {
     case AuthenticationType::SASL: return "SASL"; break;
     case AuthenticationType::TOKEN: return "TOKEN"; break;
     case AuthenticationType::CERTIFICATE: return "CERTIFICATE"; break;
+    case AuthenticationType::JWT: return "JWT"; break;
   }
   return "<cannot reach here>";
 }
@@ -173,9 +174,11 @@ static Status DoClientNegotiation(Connection* conn,
   // Prefer secondary credentials (such as authn token) if permitted by policy.
   const auto authn_token = (conn->credentials_policy() == CredentialsPolicy::PRIMARY_CREDENTIALS)
       ? std::nullopt : messenger->authn_token();
+  const auto jwt = messenger->jwt();
   ClientNegotiation client_negotiation(conn->release_socket(),
                                        &messenger->tls_context(),
                                        authn_token,
+                                       jwt,
                                        encryption,
                                        encrypt_loopback,
                                        messenger->sasl_proto_name());
@@ -259,6 +262,7 @@ static Status DoServerNegotiation(Connection* conn,
   ServerNegotiation server_negotiation(conn->release_socket(),
                                        &messenger->tls_context(),
                                        &messenger->token_verifier(),
+                                       &messenger->jwt_verifier(),
                                        encryption,
                                        encrypt_loopback,
                                        messenger->sasl_proto_name());

@@ -21,6 +21,7 @@
 #include <memory>
 #include <string>
 
+#include "kudu/util/jwt.h"
 #include "kudu/util/logging.h"
 #include "kudu/util/promise.h"
 #include "kudu/util/status.h"
@@ -88,6 +89,21 @@ class JWTHelper {
   // JWKS Manager for Json Web Token (JWT) verification.
   // Only one instance per daemon.
   std::unique_ptr<JWKSMgr> jwks_mgr_;
+};
+
+// JwtVerifier implementation that uses JWKS to verify tokens.
+class KeyBasedJwtVerifier : public JwtVerifier {
+ public:
+  KeyBasedJwtVerifier(const std::string& jwks_uri, bool is_local_file)
+      : jwt_(JWTHelper::GetInstance()) {
+    CHECK_OK(jwt_->Init(jwks_uri, is_local_file));
+  }
+  ~KeyBasedJwtVerifier() = default;
+  Status VerifyToken(const std::string& bytes_raw, std::string* subject) const override;
+ private:
+  JWTHelper* jwt_;
+
+  DISALLOW_COPY_AND_ASSIGN(KeyBasedJwtVerifier);
 };
 
 } // namespace impala
