@@ -76,6 +76,7 @@
 #include "kudu/util/flag_validators.h"
 #include "kudu/util/flags.h"
 #include "kudu/util/jsonwriter.h"
+#include "kudu/util/jwt-util.h"
 #include "kudu/util/logging.h"
 #include "kudu/util/mem_tracker.h"
 #include "kudu/util/metrics.h"
@@ -636,6 +637,7 @@ Status ServerBase::Init() {
 
   // Create the Messenger.
   rpc::MessengerBuilder builder(name_);
+  std::shared_ptr<JwtVerifier> jwt_verifier(new KeyBasedJwtVerifier("", true));
   builder.set_num_reactors(FLAGS_num_reactor_threads)
          .set_min_negotiation_threads(FLAGS_min_negotiation_threads)
          .set_max_negotiation_threads(FLAGS_max_negotiation_threads)
@@ -651,6 +653,7 @@ Status ServerBase::Init() {
          .set_epki_cert_key_files(FLAGS_rpc_certificate_file, FLAGS_rpc_private_key_file)
          .set_epki_certificate_authority_file(FLAGS_rpc_ca_certificate_file)
          .set_epki_private_password_key_cmd(FLAGS_rpc_private_key_password_cmd)
+         .set_jwt_verifier(std::move(jwt_verifier))
          .set_keytab_file(FLAGS_keytab_file)
          .enable_inbound_tls();
 
