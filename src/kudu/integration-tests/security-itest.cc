@@ -31,6 +31,7 @@
 #include <gflags/gflags_declare.h>
 #include <glog/logging.h>
 #include <gtest/gtest.h>
+#include <jwt-cpp/jwt.h>
 
 #include "kudu/client/client-test-util.h"
 #include "kudu/client/client.h"
@@ -51,8 +52,10 @@
 #include "kudu/mini-cluster/external_mini_cluster.h"
 #include "kudu/rpc/messenger.h"
 #include "kudu/rpc/rpc_controller.h"
+#include "kudu/security/cert.h"
 #include "kudu/security/kinit_context.h"
 #include "kudu/security/test/mini_kdc.h"
+#include "kudu/security/test/test_certs.h"
 #include "kudu/security/token.pb.h"
 #include "kudu/server/server_base.pb.h"
 #include "kudu/server/server_base.proxy.h"
@@ -62,6 +65,7 @@
 #include "kudu/tserver/tserver_service.pb.h"
 #include "kudu/tserver/tserver_service.proxy.h"
 #include "kudu/util/env.h"
+#include "kudu/util/jwt_test_certs.h"
 #include "kudu/util/monotime.h"
 #include "kudu/util/net/net_util.h"
 #include "kudu/util/net/sockaddr.h"
@@ -74,6 +78,7 @@
 #include "kudu/util/test_macros.h"
 #include "kudu/util/test_util.h"
 
+DECLARE_bool(rpc_trace_negotiation);
 DECLARE_string(local_ip_for_outbound_sockets);
 
 using kudu::client::KuduClient;
@@ -505,6 +510,71 @@ void GetFullBinaryPath(string* binary) {
   string exe;
   ASSERT_OK(Env::Default()->GetExecutablePath(&exe));
   (*binary) = JoinPathSegments(DirName(exe), *binary);
+}
+
+TEST_F(SecurityITest, TestJwt) {
+  const auto& dir = GetTestDataDirectory();
+  string cert_file;
+  string key_file;
+  string ca_cert_file;
+  ASSERT_OK(security::CreateTestSSLCertWithChainSignedByRoot(
+      dir, &cert_file, &key_file, &ca_cert_file));
+
+  string jwks_file_path = JoinPathSegments(dir, "jwks");
+  unique_ptr<WritableFile> file;
+  ASSERT_OK(Env::Default()->NewWritableFile(jwks_file_path, &file));
+  auto jwks = Substitute(jwks_rsa_file_format, kid_1, "RS256",
+      rsa_pub_key_jwk_n, rsa_pub_key_jwk_e, kid_2, "RS256", rsa_invalid_pub_key_jwk_n,
+      rsa_pub_key_jwk_e);
+  ASSERT_OK(file->Append(jwks));
+  ASSERT_OK(file->Sync());
+  cluster_opts_.extra_master_flags = {
+      "--unlock_experimental_flags",
+      Substitute("--jwks_file_path=$0", jwks_file_path)
+  };
+  cluster_opts_.enable_kerberos = false;
+  cluster_opts_.num_tablet_servers = 0;
+  ASSERT_OK(StartCluster());
+  KuduClientBuilder builder;
+  for (auto i = 0; i < cluster_->num_masters(); ++i) {
+    builder.add_master_server_addr(cluster_->master(i)->bound_rpc_addr().ToString());
+  }
+
+  FLAGS_rpc_trace_negotiation = true;
+  {
+    client::AuthenticationCredentialsPB pb;
+    security::JwtRawPB jwt = security::JwtRawPB();
+    auto encoded_token =
+        jwt::create()
+            .set_issuer("auth0")
+            .set_type("JWT")
+            .set_algorithm("RS256")
+            .set_key_id(kid_1)
+            .set_subject("impala")
+            .sign(jwt::algorithm::rs256(rsa_pub_key_pem, rsa_priv_key_pem, "", ""));
+    jwt.set_jwt_data(encoded_token);
+    *pb.mutable_jwt() = jwt;
+    string creds;
+    ASSERT_TRUE(pb.SerializeToString(&creds));
+    builder.import_authentication_credentials(creds);
+    builder.require_authentication(true);
+    shared_ptr<KuduClient> client;
+    ASSERT_OK(builder.Build(&client));
+    vector<string> tables;
+    ASSERT_OK(client->ListTables(&tables));
+  }
+  // Now generate an invalid/empty JWT. The authentication should fail.
+  client::AuthenticationCredentialsPB pb;
+  security::JwtRawPB jwt = security::JwtRawPB();
+  *pb.mutable_jwt() = jwt;
+  string creds;
+  ASSERT_TRUE(pb.SerializeToString(&creds));
+  builder.import_authentication_credentials(creds);
+  builder.require_authentication(true);
+  shared_ptr<KuduClient> client;
+  Status s = builder.Build(&client);
+  ASSERT_TRUE(s.IsRuntimeError()) << s.ToString();
+  ASSERT_STR_CONTAINS(s.ToString(), "FATAL_INVALID_JWT");
 }
 
 TEST_F(SecurityITest, TestWorldReadableKeytab) {

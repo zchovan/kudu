@@ -501,6 +501,7 @@ Status ServerNegotiation::HandleNegotiate(const NegotiatePB& request) {
           }
           break;
         case AuthenticationTypePB::kJwt:
+          LOG(INFO) << "AWONG INSERT JWT";
           authn_types.insert(AuthenticationType::JWT);
           break;
         case AuthenticationTypePB::TYPE_NOT_SET: {
@@ -546,6 +547,7 @@ Status ServerNegotiation::HandleNegotiate(const NegotiatePB& request) {
     DCHECK(ContainsKey(authn_types, AuthenticationType::SASL));
     negotiated_authn_ = AuthenticationType::SASL;
   }
+  LOG(INFO) << "AWONG " << negotiated_authn_;
 
   // Fill in the NEGOTIATE step response for the client.
   NegotiatePB response;

@@ -241,6 +241,20 @@ DEFINE_uint64(server_max_open_files, 0,
               "automatically calculate this value. This is a soft limit");
 TAG_FLAG(server_max_open_files, advanced);
 
+DEFINE_bool(jwt_token_auth, false,
+    "When true, read the JWT token out of the RPC and extract user "
+    "name from the token payload.");
+DEFINE_bool(jwt_validate_signature, true,
+    "When true, validate the signature of JWT token with pre-installed JWKS.");
+DEFINE_bool(jwt_allow_without_tls, false,
+    "When this configuration is set to true, Kudu allows JWT authentication on "
+    "unsecure channel. This should be only enabled for testing, or development "
+    "for which TLS is handled by proxy.");
+DEFINE_string(jwks_file_path, "",
+    "File path of the pre-installed JSON Web Key Set (JWKS) for JWT verification.");
+DEFINE_string(jwks_url, "",
+    "URL of the JSON Web Key Set (JWKS) for JWT verification.");
+
 DECLARE_bool(use_hybrid_clock);
 DECLARE_int32(dns_resolver_max_threads_num);
 DECLARE_uint32(dns_resolver_cache_capacity_mb);
@@ -637,7 +651,14 @@ Status ServerBase::Init() {
 
   // Create the Messenger.
   rpc::MessengerBuilder builder(name_);
-  std::shared_ptr<JwtVerifier> jwt_verifier(new KeyBasedJwtVerifier("", true));
+  std::shared_ptr<JwtVerifier> jwt_verifier;
+  if (!FLAGS_jwks_url.empty()) {
+    jwt_verifier.reset(new KeyBasedJwtVerifier(FLAGS_jwks_url, false));
+  } else if (!FLAGS_jwks_file_path.empty()) {
+    jwt_verifier.reset(new KeyBasedJwtVerifier(FLAGS_jwks_file_path, true));
+  } else {
+    jwt_verifier.reset(new SimpleJwtVerifier);
+  }
   builder.set_num_reactors(FLAGS_num_reactor_threads)
          .set_min_negotiation_threads(FLAGS_min_negotiation_threads)
          .set_max_negotiation_threads(FLAGS_max_negotiation_threads)
