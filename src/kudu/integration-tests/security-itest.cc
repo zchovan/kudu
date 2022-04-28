@@ -26,11 +26,15 @@
 #include <ostream>
 #include <string>
 #include <tuple>
+#include <type_traits>
 #include <vector>
 
 #include <gflags/gflags_declare.h>
 #include <glog/logging.h>
 #include <gtest/gtest.h>
+#include <jwt-cpp/jwt.h>
+#include <jwt-cpp/traits/kazuho-picojson/defaults.h>
+#include <jwt-cpp/traits/kazuho-picojson/traits.h>
 
 #include "kudu/client/client-test-util.h"
 #include "kudu/client/client.h"
@@ -53,6 +57,7 @@
 #include "kudu/rpc/rpc_controller.h"
 #include "kudu/security/kinit_context.h"
 #include "kudu/security/test/mini_kdc.h"
+#include "kudu/security/test/test_certs.h"
 #include "kudu/security/token.pb.h"
 #include "kudu/server/server_base.pb.h"
 #include "kudu/server/server_base.proxy.h"
@@ -62,6 +67,7 @@
 #include "kudu/tserver/tserver_service.pb.h"
 #include "kudu/tserver/tserver_service.proxy.h"
 #include "kudu/util/env.h"
+#include "kudu/util/jwt_test_certs.h"
 #include "kudu/util/monotime.h"
 #include "kudu/util/net/net_util.h"
 #include "kudu/util/net/sockaddr.h"
@@ -74,6 +80,7 @@
 #include "kudu/util/test_macros.h"
 #include "kudu/util/test_util.h"
 
+DECLARE_bool(rpc_trace_negotiation);
 DECLARE_string(local_ip_for_outbound_sockets);
 
 using kudu::client::KuduClient;

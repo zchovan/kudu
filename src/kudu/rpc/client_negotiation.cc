@@ -195,7 +195,8 @@ Status ClientNegotiation::Negotiate(unique_ptr<ErrorStatusPB>* rpc_error) {
       ContainsKey(server_features_, TLS)) {
     RETURN_NOT_OK(tls_context_->InitiateHandshake(&tls_handshake_));
 
-    if (negotiated_authn_ == AuthenticationType::SASL) {
+    if (negotiated_authn_ == AuthenticationType::SASL ||
+        negotiated_authn_ == AuthenticationType::JWT) {
       // When using SASL authentication, verifying the server's certificate is
       // not necessary. This allows the client to still use TLS encryption for
       // connections to servers which only have a self-signed certificate.
@@ -411,6 +412,10 @@ Status ClientNegotiation::HandleNegotiate(const NegotiatePB& response) {
         negotiated_authn_ = AuthenticationType::TOKEN;
         return Status::OK();
       case AuthenticationTypePB::kJwt:
+        if (!jwt_) {
+          return Status::RuntimeError(
+              "server chose JWT authentication, but client has no JWT");
+        }
         negotiated_authn_ = AuthenticationType::JWT;
         return Status::OK();
       case AuthenticationTypePB::kCertificate:
