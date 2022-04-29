@@ -432,32 +432,30 @@ build_libunwind() {
 }
 
 build_glog() {
-  GLOG_BDIR=$TP_BUILD_DIR/$GLOG_NAME$MODE_SUFFIX
-  mkdir -p $GLOG_BDIR
-  pushd $GLOG_BDIR
-
-  # glog depends on libunwind and gflags.
-  #
-  # Specifying -Wl,-rpath has different default behavior on GNU binutils ld vs.
-  # the GNU gold linker. ld sets RPATH (due to defaulting to --disable-new-dtags)
-  # and gold sets RUNPATH (due to defaulting to --enable-new-dtags). At the time
-  # of this writing, contrary to the way RPATH is treated, when RUNPATH is
-  # specified on a binary, glibc doesn't respect it for transitive (non-direct)
-  # library dependencies (see https://sourceware.org/bugzilla/show_bug.cgi?id=13945).
-  # So we must set RUNPATH for all deps-of-deps on the dep libraries themselves.
-  #
-  # This comment applies both here and the locations elsewhere in this script
-  # where we add something to -Wl,-rpath.
-  CXXFLAGS="$EXTRA_CXXFLAGS -I$PREFIX/include" \
-    LDFLAGS="$EXTRA_LDFLAGS -L$PREFIX/lib -Wl,-rpath,$PREFIX/lib" \
-    LIBS="$EXTRA_LIBS" \
-    $GLOG_SOURCE/configure \
-    --with-pic \
-    --prefix=$PREFIX \
-    --with-gflags=$PREFIX
-  fixup_libtool
-  make -j$PARALLEL $EXTRA_MAKEFLAGS install
-  popd
+  GLOG_SHARED_BDIR=$TP_BUILD_DIR/$GLOG_NAME.shared$MODE_SUFFIX
+  GLOG_STATIC_BDIR=$TP_BUILD_DIR/$GLOG_NAME.static$MODE_SUFFIX
+  for SHARED in ON OFF; do
+    if [ $SHARED = "ON" ]; then
+      GLOG_BDIR=$GLOG_SHARED_BDIR
+    else
+      GLOG_BDIR=$GLOG_STATIC_BDIR
+    fi
+    mkdir -p $GLOG_BDIR
+    pushd $GLOG_BDIR
+    rm -rf CMakeCache.txt CMakeFiles/
+    cmake \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_INSTALL_PREFIX=$PREFIX \
+      -DCMAKE_CXX_FLAGS="$EXTRA_CXXFLAGS" \
+      -DCMAKE_EXE_LINKER_FLAGS="$EXTRA_LDFLAGS $EXTRA_LIBS" \
+      -DCMAKE_MODULE_LINKER_FLAGS="$EXTRA_LDFLAGS $EXTRA_LIBS" \
+      -DCMAKE_SHARED_LINKER_FLAGS="$EXTRA_LDFLAGS $EXTRA_LIBS" \
+      -DBUILD_SHARED_LIBS=$SHARED \
+      $EXTRA_CMAKE_FLAGS \
+      $GLOG_SOURCE
+    ${NINJA:-make} -j$PARALLEL $EXTRA_MAKEFLAGS install
+    popd
+  done
 }
 
 build_gperftools() {

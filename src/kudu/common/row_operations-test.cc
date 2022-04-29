@@ -298,7 +298,7 @@ TEST_F(RowOperationsTest, SchemaFuzz) {
     g_failing_case.server_schema = &server_schema;
     g_failing_case.row = &row;
     ASAN_SET_DEATH_CALLBACK(&DumpFailingCase);
-    google::InstallFailureFunction(&GlogFailure);
+    google::InstallFailureFunction((google::logging_fail_func_t) GlogFailure);
 
     for (int i = 0; i < client_schema.num_columns(); i++) {
       if (client_schema.column(i).is_nullable() &&
@@ -326,7 +326,7 @@ TEST_F(RowOperationsTest, SchemaFuzz) {
 
     DoFuzzTest(server_schema, row, 100);
     ASAN_SET_DEATH_CALLBACK(NULL);
-    google::InstallFailureFunction(&abort);
+    google::InstallFailureFunction((google::logging_fail_func_t) abort);
   }
 }
 
