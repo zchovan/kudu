@@ -38,7 +38,9 @@
 #include "kudu/util/hash_util.h"
 #include "kudu/util/jwt-util-internal.h"
 #include "kudu/util/jwt-util.h"
+#include "kudu/gutil/map-util.h"
 #include "kudu/gutil/strings/escaping.h"
+#include "kudu/gutil/strings/split.h"
 #include "kudu/gutil/strings/substitute.h"
 #include "kudu/util/curl_util.h"
 #include "kudu/util/faststring.h"
@@ -50,6 +52,7 @@ DEFINE_int32(jwks_pulling_timeout_s, 10,
     "The time in seconds for connection timed out when pulling JWKS from the specified URL.");
 
 using std::string;
+using std::vector;
 using strings::Substitute;
 
 namespace kudu {
@@ -673,7 +676,7 @@ Status JWKSMgr::Init(const std::string& jwks_uri, bool is_local_file) {
 
     bool is_changed = false;
     status = new_jwks->LoadKeysFromUrl(jwks_uri, current_jwks_checksum_, &is_changed);
-    if (!status.ok()) {
+    if (PREDICT_FALSE(!status.ok())) {
       LOG(ERROR) << "Failed to load JWKS: " << status.ToString();
       return status;
     }
@@ -731,6 +734,9 @@ void JWKSMgr::SetJWKSSnapshot(const JWKSSnapshotPtr& new_jwks) {
 //
 // JWTHelper member functions.
 //
+
+JWTHelper::~JWTHelper() {
+}
 
 struct JWTHelper::JWTDecodedToken {
   JWTDecodedToken(const DecodedJWT& decoded_jwt) : decoded_jwt_(decoded_jwt) {}
@@ -893,9 +899,83 @@ Status JWTHelper::GetCustomClaimUsername(const JWTDecodedToken* decoded_token,
   return status;
 }
 
-Status KeyBasedJwtVerifier::VerifyToken(const string& bytes_raw, string* subject) const {
+Status KeyBasedJwtVerifier::VerifyToken(const string& bytes_raw, string* subject) {
   JWTHelper::UniqueJWTDecodedToken decoded_token;
   RETURN_NOT_OK(JWTHelper::Decode(bytes_raw, decoded_token));
+  RETURN_NOT_OK(jwt_->Verify(decoded_token.get()));
+  if (!decoded_token->decoded_jwt_.has_subject()) {
+    return Status::InvalidArgument("token does not include subject");
+  }
+  *subject = decoded_token->decoded_jwt_.get_subject();
+  return Status::OK();
+}
+
+Status PerAccountKeyBasedJwtVerifier::JWTHelperForToken(const JWTHelper::JWTDecodedToken& token,
+                                                        JWTHelper** helper) {
+  if (!token.decoded_jwt_.has_issuer()) {
+    return Status::InvalidArgument("Expected token to have 'issuer' field");
+  }
+  // Parse the account ID from the 'iss' field of the JWT. If we already have a
+  // JWTHelper for it, use it.
+  const auto& issuer = token.decoded_jwt_.get_issuer();
+  vector<string> issuer_pieces = strings::Split(issuer, "/");
+  CHECK(!issuer_pieces.empty());
+  const auto& account_id = issuer_pieces.back();
+  const auto* unique_helper = FindOrNull(jwt_by_account_id_, account_id);
+  if (unique_helper) {
+    *helper = unique_helper->get();
+    return Status::OK();
+  }
+  // Otherwise, use the Discovery Endpoint to determine what 'jwks_uri' to use.
+  kudu::EasyCurl curl;
+  kudu::faststring dst;
+  const auto discovery_endpoint = Substitute("$0?accountId=$1", discovery_base_, account_id);
+  curl.set_timeout(
+      kudu::MonoDelta::FromMilliseconds(FLAGS_jwks_pulling_timeout_s * 1000));
+  curl.set_verify_peer(false);
+  RETURN_NOT_OK_PREPEND(curl.FetchURL(discovery_endpoint, &dst),
+      Substitute("Error downloading contents of Discovery Endpoint from '$0'", discovery_endpoint));
+  string jwks_uri;
+  if (dst.size() > 0) {
+    dst.push_back('\0');
+    Document endpoint_doc;
+    endpoint_doc.Parse((char*)dst.data());
+#define RETURN_INVALID_IF(stmt, msg) \
+  if (PREDICT_FALSE(stmt)) { \
+    return Status::InvalidArgument(msg); \
+  }
+    RETURN_INVALID_IF(endpoint_doc.HasParseError(),
+                      GetParseError_En(endpoint_doc.GetParseError()));
+    RETURN_INVALID_IF(!endpoint_doc.IsObject(), "root element must be a JSON Object");
+    auto jwks_uri_member = endpoint_doc.FindMember("jwks_uri");
+    RETURN_INVALID_IF(jwks_uri_member == endpoint_doc.MemberEnd(), "jwks_uri is required");
+    RETURN_INVALID_IF(!jwks_uri_member->value.IsString(), "jwks_uri must be a string");
+    jwks_uri = string(jwks_uri_member->value.GetString());
+  } else {
+    return Status::RuntimeError("Discovery Endpoint returned an empty document");
+  }
+
+  // TODO(awong): this implementation expects there to be a small number of
+  // accounts, as it creates a JWKS refresh thread for each account. Group the
+  // refreshes into a single thread or threadpool.
+  auto new_helper = std::make_unique<JWTHelper>();
+  RETURN_NOT_OK_PREPEND(
+      new_helper->Init(jwks_uri, /*is_local_file*/false),
+      "Error initializing JWT helper");
+  *helper = new_helper.get();
+  EmplaceOrDie(&jwt_by_account_id_, account_id, std::move(new_helper));
+  return Status::OK();
+}
+
+Status PerAccountKeyBasedJwtVerifier::VerifyToken(const string& bytes_raw, string* subject) {
+  JWTHelper::UniqueJWTDecodedToken decoded_token;
+  RETURN_NOT_OK(JWTHelper::Decode(bytes_raw, decoded_token));
+  JWTHelper* jwt;
+  RETURN_NOT_OK(JWTHelperForToken(*decoded_token, &jwt));
+  RETURN_NOT_OK(jwt->Verify(decoded_token.get()));
+  if (!decoded_token->decoded_jwt_.has_subject()) {
+    return Status::InvalidArgument("token does not include subject");
+  }
   *subject = decoded_token->decoded_jwt_.get_subject();
   return Status::OK();
 }

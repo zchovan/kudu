@@ -254,6 +254,10 @@ DEFINE_string(jwks_file_path, "",
     "File path of the pre-installed JSON Web Key Set (JWKS) for JWT verification.");
 DEFINE_string(jwks_url, "",
     "URL of the JSON Web Key Set (JWKS) for JWT verification.");
+DEFINE_string(jwks_discovery_endpoint_base, "",
+    "Base URL of the Discovery Endpoint that points to a JSON Web Key Set "
+    "(JWKS) for JWT verification. Additional query parameters, like 'accountId', "
+    "are taken from received JWTs to get the appropriate Discovery Endpoint.");
 
 DECLARE_bool(use_hybrid_clock);
 DECLARE_int32(dns_resolver_max_threads_num);
@@ -656,6 +660,8 @@ Status ServerBase::Init() {
     jwt_verifier.reset(new KeyBasedJwtVerifier(FLAGS_jwks_url, false));
   } else if (!FLAGS_jwks_file_path.empty()) {
     jwt_verifier.reset(new KeyBasedJwtVerifier(FLAGS_jwks_file_path, true));
+  } else if (!FLAGS_jwks_discovery_endpoint_base.empty()) {
+    jwt_verifier.reset(new PerAccountKeyBasedJwtVerifier(FLAGS_jwks_discovery_endpoint_base));
   } else {
     jwt_verifier.reset(new SimpleJwtVerifier);
   }

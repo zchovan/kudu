@@ -20,6 +20,7 @@
 
 #include <memory>
 #include <string>
+#include <unordered_map>
 
 #include "kudu/util/jwt.h"
 #include "kudu/util/logging.h"
@@ -54,6 +55,10 @@ class JWTHelper {
   // facilitate automatic reference counting.
   typedef std::unique_ptr<JWTDecodedToken, TokenDeleter> UniqueJWTDecodedToken;
 
+  // Define our destructor elsewhere so JWKSMgr's destructor is called from the
+  // correct compilation unit.
+  ~JWTHelper();
+
   // Return the single instance.
   static JWTHelper* GetInstance() { return jwt_helper_; }
 
@@ -87,7 +92,7 @@ class JWTHelper {
   bool initialized_ = false;
 
   // JWKS Manager for Json Web Token (JWT) verification.
-  // Only one instance per daemon.
+  // Only one instance per helper.
   std::unique_ptr<JWKSMgr> jwks_mgr_;
 };
 
@@ -99,11 +104,28 @@ class KeyBasedJwtVerifier : public JwtVerifier {
     CHECK_OK(jwt_->Init(jwks_uri, is_local_file));
   }
   ~KeyBasedJwtVerifier() = default;
-  Status VerifyToken(const std::string& bytes_raw, std::string* subject) const override;
+  Status VerifyToken(const std::string& bytes_raw, std::string* subject) override;
  private:
   JWTHelper* jwt_;
 
   DISALLOW_COPY_AND_ASSIGN(KeyBasedJwtVerifier);
+};
+
+class PerAccountKeyBasedJwtVerifier : public JwtVerifier {
+ public:
+  PerAccountKeyBasedJwtVerifier(const std::string& jwks_uri)
+      : discovery_base_(jwks_uri) {}
+  ~PerAccountKeyBasedJwtVerifier() = default;
+  Status VerifyToken(const std::string& bytes_raw, std::string* subject) override;
+ private:
+  // Gets the appropriate JWTHelper, based on the token and source mode.
+  // Returns an error if the token doesn't contain the appropriate fields.
+  Status JWTHelperForToken(const JWTHelper::JWTDecodedToken& token, JWTHelper** helper);
+
+  std::string discovery_base_;
+  std::unordered_map<std::string, std::unique_ptr<JWTHelper>> jwt_by_account_id_;
+
+  DISALLOW_COPY_AND_ASSIGN(PerAccountKeyBasedJwtVerifier);
 };
 
 } // namespace impala
