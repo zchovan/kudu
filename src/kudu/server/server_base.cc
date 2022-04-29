@@ -258,6 +258,10 @@ DEFINE_string(jwks_file_path, "",
     "File path of the pre-installed JSON Web Key Set (JWKS) for JWT verification.");
 DEFINE_string(jwks_url, "",
     "URL of the JSON Web Key Set (JWKS) for JWT verification.");
+DEFINE_string(jwks_discovery_endpoint_base, "",
+    "Base URL of the Discovery Endpoint that points to a JSON Web Key Set "
+    "(JWKS) for JWT verification. Additional query parameters, like 'accountId', "
+    "are taken from received JWTs to get the appropriate Discovery Endpoint.");
 
 TAG_FLAG(enable_jwt_token_auth, experimental);
 TAG_FLAG(jwt_validate_signature, experimental);
@@ -266,6 +270,7 @@ TAG_FLAG(jwt_allow_without_tls, experimental);
 TAG_FLAG(jwt_allow_without_tls, unsafe);
 TAG_FLAG(jwks_file_path, experimental);
 TAG_FLAG(jwks_url, experimental);
+TAG_FLAG(jwks_discovery_endpoint_base, experimental);
 
 DECLARE_bool(use_hybrid_clock);
 DECLARE_int32(dns_resolver_max_threads_num);
