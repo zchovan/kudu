@@ -190,7 +190,7 @@ static bool DumpCallback(const google_breakpad::MinidumpDescriptor& descriptor,
 }
 
 // Failure function that simply calls abort().
-static void AbortFailureFunction() {
+_Noreturn static void AbortFailureFunction() {
   abort();
 }
 
