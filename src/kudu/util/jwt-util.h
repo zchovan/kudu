@@ -113,8 +113,8 @@ class KeyBasedJwtVerifier : public JwtVerifier {
 
 class PerAccountKeyBasedJwtVerifier : public JwtVerifier {
  public:
-  PerAccountKeyBasedJwtVerifier(const std::string& jwks_uri)
-      : discovery_base_(jwks_uri) {}
+  PerAccountKeyBasedJwtVerifier(const std::string& oidc_uri)
+      : oidc_uri_(oidc_uri) {}
   ~PerAccountKeyBasedJwtVerifier() = default;
   Status VerifyToken(const std::string& bytes_raw, std::string* subject) override;
  private:
@@ -122,7 +122,7 @@ class PerAccountKeyBasedJwtVerifier : public JwtVerifier {
   // Returns an error if the token doesn't contain the appropriate fields.
   Status JWTHelperForToken(const JWTHelper::JWTDecodedToken& token, JWTHelper** helper);
 
-  std::string discovery_base_;
+  std::string oidc_uri_;
   std::unordered_map<std::string, std::unique_ptr<JWTHelper>> jwt_by_account_id_;
 
   DISALLOW_COPY_AND_ASSIGN(PerAccountKeyBasedJwtVerifier);
