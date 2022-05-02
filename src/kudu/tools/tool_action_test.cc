@@ -179,6 +179,14 @@ Status ProcessRequest(const ControlShellRequestPB& req,
           opts.principal = cc.principal();
         }
       }
+      if (cc.has_mini_oidc_options()) {
+        opts.enable_client_jwt = true;
+        const auto& mini_oidc_opts = cc.mini_oidc_options();
+        for (const auto& jwks_opt : mini_oidc_opts.jwks_options()) {
+          opts.mini_oidc_options.account_ids.emplace(
+              jwks_opt.account_id(), jwks_opt.valid_key());
+        }
+      }
 
       cluster->reset(new ExternalMiniCluster(std::move(opts)));
       break;
@@ -339,6 +347,21 @@ Status ProcessRequest(const ControlShellRequestPB& req,
       RETURN_NOT_OK(FindDaemon(*cluster, id, &daemon, &kdc));
       DCHECK(daemon);
       RETURN_NOT_OK(daemon->Resume());
+      break;
+    }
+    case ControlShellRequestPB::kCreateJwt:
+    {
+      const auto& r = req.create_jwt();
+      if (!r.has_account_id() || !r.has_subject()) {
+        return Status::InvalidArgument("JWT creation requires account ID and subject");
+      }
+      RETURN_NOT_OK(CheckClusterExists(*cluster));
+      auto* oidc = (*cluster)->oidc();
+      if (!oidc) {
+        return Status::ConfigurationError("mini-cluster must be configured with MiniOidc");
+      }
+      auto jwt = oidc->CreateJwt(r.account_id(), r.subject(), r.valid_key());
+      *resp->mutable_create_jwt()->mutable_jwt() = jwt;
       break;
     }
     default:
