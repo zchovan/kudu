@@ -28,12 +28,15 @@ import java.net.Socket;
 
 import org.junit.Rule;
 import org.junit.Test;
+import com.google.protobuf.ByteString;
 
+import org.apache.kudu.client.Client.AuthenticationCredentialsPB;
 import org.apache.kudu.client.HostAndPort;
 import org.apache.kudu.client.KuduClient;
 import org.apache.kudu.client.KuduClient.KuduClientBuilder;
 import org.apache.kudu.client.ListTablesResponse;
 import org.apache.kudu.client.TimeoutTracker;
+import org.apache.kudu.security.Token.JwtRawPB;
 import org.apache.kudu.test.cluster.FakeDNS;
 import org.apache.kudu.test.cluster.MiniKuduCluster;
 import org.apache.kudu.test.junit.RetryRule;
@@ -116,8 +119,7 @@ public class TestMiniKuduCluster {
                                                       .numTabletServers(0)
                                                       .enableClientJwt()
                                                       .addJwks("account-id", true)
-                                                      .build();
-         KuduClient client = new KuduClientBuilder(cluster.getMasterAddressesAsString()).build()) {
+                                                      .build()) {
       String jwt = cluster.createJwtFor("account-id", "subject", true);
       String expectedJwt = "eyJhbGciOiJSUzI1NiIsImtpZCI6InB1YmxpYzpjNDI0YjY3Yi1mZTI4LTQ1ZDctYj" +
           "AxNS1mNzlkYTUwYjViMjEiLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiJhdXRoMFwvYWNjb3VudC1pZCIsInN1Yi" +
@@ -127,6 +129,16 @@ public class TestMiniKuduCluster {
           "K3iaSYedLZkK-QIIryO5sSvJLe7dCH9iI8rfKNlWbqQzq_Q1wcLWNEZNj9A7mviJI1vgZrXTphdEzF8GiGm" +
           "1MtPtWlx7VK8Rsb3AAUjvi5qYLw";
       assertEquals(expectedJwt, jwt);
+      AuthenticationCredentialsPB credentials = AuthenticationCredentialsPB.newBuilder()
+          .setJwt(JwtRawPB.newBuilder()
+                     .setJwtData(ByteString.copyFromUtf8(jwt))
+                     .build())
+          .build();
+      KuduClient client = new KuduClientBuilder(cluster.getMasterAddressesAsString())
+          .requireAuthentication(true)
+          .build();
+      client.importAuthenticationCredentials(credentials.toByteArray());
+      client.listTabletServers();
     }
   }
 

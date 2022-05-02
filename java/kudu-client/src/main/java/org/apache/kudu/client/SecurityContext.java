@@ -55,6 +55,7 @@ import org.slf4j.LoggerFactory;
 import org.apache.kudu.client.Client.AuthenticationCredentialsPB;
 import org.apache.kudu.security.Token.SignedTokenPB;
 import org.apache.kudu.security.Token.TokenPB;
+import org.apache.kudu.security.Token.JwtRawPB;
 import org.apache.kudu.util.Pair;
 import org.apache.kudu.util.SecurityUtil;
 
@@ -72,6 +73,10 @@ class SecurityContext {
   @GuardedBy("this")
   @Nullable
   private SignedTokenPB authnToken;
+
+  @GuardedBy("this")
+  @Nullable
+  private JwtRawPB jsonWebToken;
 
   @GuardedBy("this")
   private String realUser;
@@ -335,12 +340,21 @@ class SecurityContext {
     return authnToken;
   }
 
+  @Nullable
+  public synchronized JwtRawPB getJsonWebToken() {
+    return jsonWebToken;
+  }
+
   /**
    * Set the token that we will use to authenticate to servers. Replaces any
    * prior token.
    */
   public synchronized void setAuthenticationToken(SignedTokenPB token) {
     authnToken = token;
+  }
+
+  public synchronized void setJsonWebToken(JwtRawPB jwt) {
+    jsonWebToken = jwt;
   }
 
   /**
