@@ -71,6 +71,7 @@
 #include "kudu/util/env.h"
 #include "kudu/util/env_util.h"
 #include "kudu/util/fault_injection.h"
+#include "kudu/util/mini_oidc.h"
 #include "kudu/util/monotime.h"
 #include "kudu/util/net/sockaddr.h"
 #include "kudu/util/net/socket.h"
@@ -142,8 +143,9 @@ ExternalMiniClusterOptions::ExternalMiniClusterOptions()
 #if !defined(NO_CHRONY)
       ,
       num_ntp_servers(1),
-      ntp_config_mode(BuiltinNtpConfigMode::ALL_SERVERS)
+      ntp_config_mode(BuiltinNtpConfigMode::ALL_SERVERS),
 #endif // #if !defined(NO_CHRONY) ...
+      enable_client_jwt(false)
 {
 }
 
@@ -416,6 +418,11 @@ Status ExternalMiniCluster::Start() {
 
     RETURN_NOT_OK_PREPEND(hms_->Start(),
                           "Failed to start the Hive Metastore");
+  }
+
+  if (opts_.enable_client_jwt) {
+    oidc_.reset(new MiniOidc(opts_.mini_oidc_options));
+    RETURN_NOT_OK_PREPEND(oidc_->Start(), "Failed to start OIDC endpoints");
   }
 
   RETURN_NOT_OK_PREPEND(StartMasters(), "failed to start masters");
@@ -706,6 +713,9 @@ Status ExternalMiniCluster::CreateMaster(const vector<HostPort>& master_rpc_addr
                                   JoinPathSegments(cluster_root(),
                                                    "ranger-client")));
     flags.emplace_back("--trusted_user_acl=test-admin");
+  }
+  if (opts_.enable_client_jwt) {
+    flags.emplace_back(Substitute("--jwks_discovery_endpoint_base=$0", oidc_->url()));
   }
   if (!opts_.master_alias_prefix.empty()) {
     flags.emplace_back(Substitute("--host_for_tests=$0.$1",

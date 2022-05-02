@@ -512,6 +512,54 @@ void GetFullBinaryPath(string* binary) {
   (*binary) = JoinPathSegments(DirName(exe), *binary);
 }
 
+TEST_F(SecurityITest, TestJwtMiniCluster) {
+  cluster_opts_.enable_kerberos = false;
+  cluster_opts_.num_tablet_servers = 0;
+  cluster_opts_.enable_client_jwt = true;
+  MiniOidcOptions oidc_opts;
+  const auto kValidAccount = "valid.acc";
+  const auto kInvalidAccount = "invalid.acc";
+  oidc_opts.account_ids = {
+    { kValidAccount, true },
+    { kInvalidAccount, false },
+  };
+  cluster_opts_.num_tablet_servers = 0;
+  cluster_opts_.mini_oidc_options = std::move(oidc_opts);
+  ASSERT_OK(StartCluster());
+  const auto kSubject = "kudu-user";
+  const auto configure_builder_for = [&] (const string& account_id, KuduClientBuilder* b) {
+    string encoded_token = cluster_->oidc()->CreateJwt(account_id, kSubject, true);
+    client::AuthenticationCredentialsPB pb;
+    security::JwtRawPB jwt = security::JwtRawPB();
+    jwt.set_jwt_data(encoded_token);
+    *pb.mutable_jwt() = jwt;
+    string creds;
+    CHECK(pb.SerializeToString(&creds));
+    for (auto i = 0; i < cluster_->num_masters(); ++i) {
+      b->add_master_server_addr(cluster_->master(i)->bound_rpc_addr().ToString());
+    }
+    b->import_authentication_credentials(creds);
+    b->require_authentication(true);
+  };
+
+  {
+    KuduClientBuilder valid_builder;
+    shared_ptr<KuduClient> client;
+    configure_builder_for(kValidAccount, &valid_builder);
+    ASSERT_OK(valid_builder.Build(&client));
+    vector<string> tables;
+    ASSERT_OK(client->ListTables(&tables));
+  }
+  {
+    KuduClientBuilder invalid_builder;
+    shared_ptr<KuduClient> client;
+    configure_builder_for(kInvalidAccount, &invalid_builder);
+    Status s = invalid_builder.Build(&client);
+    ASSERT_FALSE(s.ok()) << s.ToString();
+    ASSERT_STR_CONTAINS(s.ToString(), "FATAL_INVALID_JWT");
+  }
+}
+
 TEST_F(SecurityITest, TestJwt) {
   const auto& dir = GetTestDataDirectory();
   string cert_file;

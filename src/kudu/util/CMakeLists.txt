@@ -412,7 +412,8 @@ endif()
 
 # Used by mini-cluster, so must be built even when NO_TESTS=0.
 add_library(kudu_test_util
-  test_util.cc)
+  test_util.cc
+  jwt_test_certs.cc)
 target_link_libraries(kudu_test_util
   gflags
   glog
