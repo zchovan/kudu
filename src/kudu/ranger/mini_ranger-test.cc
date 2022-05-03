@@ -37,14 +37,16 @@ namespace ranger {
 
 class MiniRangerTest : public KuduTest {
  public:
-  MiniRangerTest()
-    : ranger_("127.0.0.1") {}
+  MiniRangerTest() {
+    std::shared_ptr<postgres::MiniPostgres> mini_pg(new postgres::MiniPostgres("127.0.0.1"));
+    ranger_.reset(new MiniRanger("127.0.0.1", mini_pg));
+  }
   void SetUp() override {
-    ASSERT_OK(ranger_.Start());
+    ASSERT_OK(ranger_->Start());
   }
 
  protected:
-  MiniRanger ranger_;
+  std::unique_ptr<MiniRanger> ranger_;
 };
 
 TEST_F(MiniRangerTest, TestGrantPrivilege) {
@@ -55,7 +57,7 @@ TEST_F(MiniRangerTest, TestGrantPrivilege) {
   policy.tables.emplace_back("bar");
   policy.items.emplace_back(std::move(item));
 
-  ASSERT_OK(ranger_.AddPolicy(std::move(policy)));
+  ASSERT_OK(ranger_->AddPolicy(std::move(policy)));
 }
 
 TEST_F(MiniRangerTest, TestPersistence) {
@@ -66,15 +68,15 @@ TEST_F(MiniRangerTest, TestPersistence) {
   policy.tables.emplace_back("bar");
   policy.items.emplace_back(std::move(item));
 
-  ASSERT_OK(ranger_.AddPolicy(policy));
+  ASSERT_OK(ranger_->AddPolicy(policy));
 
-  ASSERT_OK(ranger_.Stop());
-  ASSERT_OK(ranger_.Start());
+  ASSERT_OK(ranger_->Stop());
+  ASSERT_OK(ranger_->Start());
 
   EasyCurl curl;
   curl.set_auth(CurlAuthType::BASIC, "admin", "admin");
   faststring result;
-  ASSERT_OK(curl.FetchURL(JoinPathSegments(ranger_.admin_url(), "service/plugins/policies/count"),
+  ASSERT_OK(curl.FetchURL(JoinPathSegments(ranger_->admin_url(), "service/plugins/policies/count"),
                           &result));
   ASSERT_EQ("1", result.ToString());
 }

@@ -53,11 +53,10 @@ Status MiniPostgres::Start() {
   if (process_) {
     return Status::IllegalState("Postgres already running");
   }
-  Env* env = Env::Default();
 
   VLOG(1) << "Starting Postgres";
   string pgr = pg_root();
-  if (!env->FileExists(pgr)) {
+  if (firstRun()) {
     // This is our first time running. Set up our directories, config files,
     // and port.
     LOG(INFO) << "Running initdb...";
@@ -98,7 +97,7 @@ Status MiniPostgres::Start() {
   return WaitForReady();
 }
 
-Status MiniPostgres::Stop() {
+  Status MiniPostgres::Stop() {
   if (process_) {
     RETURN_NOT_OK(process_->KillAndWait(SIGTERM));
     process_.reset();
