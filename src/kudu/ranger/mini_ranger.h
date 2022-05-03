@@ -36,6 +36,9 @@
 #include "kudu/util/path_util.h"
 #include "kudu/util/status.h"
 #include "kudu/util/test_util.h"
+#include "kudu/util/net/net_util.h"
+
+using kudu::postgres::MiniPostgres;
 
 namespace kudu {
 class EasyJson;
@@ -70,18 +73,21 @@ struct AuthorizationPolicy {
 // Wrapper around Apache Ranger to be used in integration tests.
 class MiniRanger {
  public:
-  explicit MiniRanger(std::string host)
-    : MiniRanger(GetTestDataDirectory(), std::move(host)) {}
+  explicit MiniRanger(std::string host, std::shared_ptr<postgres::MiniPostgres> mini_pg) {
+    MiniRanger(GetTestDataDirectory(), std::move(host), mini_pg);
+  }
 
   ~MiniRanger();
 
-  MiniRanger(std::string data_root, std::string host)
+  MiniRanger(std::string data_root,
+             std::string host,
+             std::shared_ptr<postgres::MiniPostgres> mini_pg)
     : data_root_(std::move(data_root)),
       host_(std::move(host)),
-      mini_pg_(data_root_, host_),
       kerberos_(false),
       env_(Env::Default()) {
         curl_.set_auth(CurlAuthType::BASIC, "admin", "admin");
+        mini_pg_ = mini_pg;
       }
 
   // Starts Ranger and its dependencies.
@@ -163,7 +169,7 @@ class MiniRanger {
   const std::string data_root_;
   const std::string host_;
 
-  postgres::MiniPostgres mini_pg_;
+  std::shared_ptr<MiniPostgres> mini_pg_;
   std::unique_ptr<Subprocess> process_;
 
   // URL of the Ranger admin REST API.

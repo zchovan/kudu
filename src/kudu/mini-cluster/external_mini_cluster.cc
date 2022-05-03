@@ -325,7 +325,12 @@ Status ExternalMiniCluster::Start() {
 
   if (opts_.enable_ranger) {
     string host = GetBindIpForExternalServer(0);
-    ranger_.reset(new ranger::MiniRanger(cluster_root(), host));
+    if (postgres_->firstRun()) {
+      postgres_.reset(new postgres::MiniPostgres(cluster_root(), host));
+    }
+    RETURN_NOT_OK_PREPEND(postgres_->Start(), "Could not start Postgres for Ranger");
+
+    ranger_.reset(new ranger::MiniRanger(cluster_root(), host, postgres_));
     if (opts_.enable_kerberos) {
 
       // The SPNs match the ones defined in mini_ranger_configs.h.
@@ -355,6 +360,12 @@ Status ExternalMiniCluster::Start() {
     RETURN_NOT_OK_PREPEND(ranger_->CreateClientConfig(JoinPathSegments(cluster_root(),
                                                                        "ranger-client")),
                           "Failed to write Ranger client config");
+  }
+  if (opts_.enable_ranger_kms) {
+
+    if (opts_.enable_kerberos) {
+      // handle kerberos
+    }
   }
 
   // Start the HMS.
