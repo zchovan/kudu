@@ -41,7 +41,7 @@
 #include "kudu/util/monotime.h"
 #include "kudu/util/net/net_util.h"
 #include "kudu/util/status.h"
-#include "kudu/ranger-kms/mini_ranger_kms.h"
+//#include "kudu/ranger-kms/mini_ranger_kms.h"
 
 namespace kudu {
 
@@ -391,9 +391,9 @@ class ExternalMiniCluster : public MiniCluster {
     return ranger_.get();
   }
 
-  ranger_kms::MiniRangerKMS* ranger_kms() const {
-    return ranger_kms_.get();
-  }
+//  ranger_kms::MiniRangerKMS* ranger_kms() const {
+//    return ranger_kms_.get();
+//  }
 
   const std::string& cluster_root() const {
     return opts_.cluster_root;
@@ -559,7 +559,7 @@ class ExternalMiniCluster : public MiniCluster {
   std::unique_ptr<hms::MiniHms> hms_;
   std::shared_ptr<postgres::MiniPostgres> postgres_;
   std::unique_ptr<ranger::MiniRanger> ranger_;
-  std::unique_ptr<ranger_kms::MiniRangerKMS> ranger_kms_;
+//  std::unique_ptr<ranger_kms::MiniRangerKMS> ranger_kms_;
 
   std::shared_ptr<rpc::Messenger> messenger_;
 

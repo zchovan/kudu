@@ -15,12 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#include "kudu/ranger-kms//mini_ranger_kms.h"
+#include "kudu/ranger-kms/mini_ranger_kms.h"
 
 #include <gtest/gtest.h>
 
 #include "kudu/util/test_macros.h"
 #include "kudu/util/test_util.h"
+
+using kudu::postgres::MiniPostgres;
+using kudu::ranger::MiniRanger;
 
 namespace kudu {
 namespace ranger_kms {
@@ -28,7 +31,8 @@ namespace ranger_kms {
 class MiniRangerKMSTest : public KuduTest {
   public:
     MiniRangerKMSTest()
-      : ranger_kms_("127.0.0.1") {};
+      : ranger_kms_("127.0.0.1",
+                    std::shared_ptr<MiniPostgres>(new MiniPostgres("127.0.0.1"))) {};
     void SetUp() override {
       ASSERT_OK(ranger_kms_.Start());
     }
@@ -38,7 +42,10 @@ class MiniRangerKMSTest : public KuduTest {
 };
 
 TEST_F(MiniRangerKMSTest, DummyTest) {
-      ASSERT_TRUE(true);
+  ASSERT_TRUE(true);
+  LOG(INFO) << ">>> GETTING KEYS <<<";
+  Status status = ranger_kms_.getKeys();
+  KUDU_CHECK_OK(status);
 }
 
 } // namespace ranger_kms

@@ -269,6 +269,32 @@ Status CopyFile(Env* env, const string& source_path, const string& dest_path,
   return Status::OK();
 }
 
+Status CopyDirectory(Env* env, const std::string& source_path, const std::string& dest_path,
+                     WritableFileOptions opts) {
+  bool is_dir;
+  RETURN_NOT_OK(env->IsDirectory(source_path, &is_dir));
+
+  if (!is_dir) {
+    return Status::InvalidArgument("source is not a directory");
+  }
+
+  vector<string> children;
+  RETURN_NOT_OK(ListFilesInDir(env, source_path, &children));
+
+  for (const auto& c: children) {
+    string source = JoinPathSegments(source_path, c);
+    string dest = JoinPathSegments(dest_path, c);
+    RETURN_NOT_OK(env->IsDirectory(source, &is_dir));
+    if (is_dir) {
+      RETURN_NOT_OK(CopyDirectory(env,source, dest, opts));
+      continue;
+    }
+    RETURN_NOT_OK(CopyFile(env,source, dest, opts));
+  }
+
+  return Status::OK();
+}
+
 Status DeleteExcessFilesByPattern(Env* env, const string& pattern, int max_matches) {
   // Negative numbers don't make sense for our interface.
   DCHECK_GE(max_matches, 0);

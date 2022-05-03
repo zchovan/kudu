@@ -73,9 +73,8 @@ struct AuthorizationPolicy {
 // Wrapper around Apache Ranger to be used in integration tests.
 class MiniRanger {
  public:
-  explicit MiniRanger(std::string host, std::shared_ptr<postgres::MiniPostgres> mini_pg) {
-    MiniRanger(GetTestDataDirectory(), std::move(host), mini_pg);
-  }
+  explicit MiniRanger(std::string host, std::shared_ptr<postgres::MiniPostgres> mini_pg) :
+    MiniRanger(GetTestDataDirectory(), std::move(host), std::move(mini_pg)) {}
 
   ~MiniRanger();
 
@@ -84,10 +83,10 @@ class MiniRanger {
              std::shared_ptr<postgres::MiniPostgres> mini_pg)
     : data_root_(std::move(data_root)),
       host_(std::move(host)),
+      mini_pg_(std::move(mini_pg)),
       kerberos_(false),
       env_(Env::Default()) {
         curl_.set_auth(CurlAuthType::BASIC, "admin", "admin");
-        mini_pg_ = mini_pg;
       }
 
   // Starts Ranger and its dependencies.
@@ -121,7 +120,12 @@ class MiniRanger {
     return ranger_admin_url_;
   }
 
- private:
+  bool isRunning() const { return process_->IsStarted(); }
+
+  // Sends a POST request to Ranger with 'payload'.
+  Status PostToRanger(std::string url, EasyJson payload) WARN_UNUSED_RESULT;
+
+private:
   // Starts the Ranger service.
   Status StartRanger() WARN_UNUSED_RESULT;
 
@@ -140,9 +144,6 @@ class MiniRanger {
 
   // Creates a Kudu service in Ranger.
   Status CreateKuduService() WARN_UNUSED_RESULT;
-
-  // Sends a POST request to Ranger with 'payload'.
-  Status PostToRanger(std::string url, EasyJson payload) WARN_UNUSED_RESULT;
 
   // Returns Ranger admin's home directory.
   std::string ranger_admin_home() const {
@@ -165,7 +166,7 @@ class MiniRanger {
         JoinPathSegments(ranger_home_, "ews/webapp"));
   }
 
-  // Directory in which to put all our stuff.
+    // Directory in which to put all our stuff.
   const std::string data_root_;
   const std::string host_;
 
