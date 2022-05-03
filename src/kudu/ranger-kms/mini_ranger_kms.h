@@ -23,7 +23,7 @@
 
 #include "kudu/gutil/port.h"
 #include "kudu/gutil/strings/substitute.h"
-#include "kudu/postgres/mini_postgres.h";
+#include "kudu/postgres/mini_postgres.h"
 #include "kudu/util/curl_util.h"
 #include "kudu/util/env.h"
 #include "kudu/util/path_util.h"
@@ -36,20 +36,22 @@ namespace ranger_kms {
 
 class MiniRangerKMS {
   public:
-    explicit MiniRangerKMS(std::string host)
-      : MiniRangerKMS(GetTestDataDirectory(), std::move(host)) {}
+    explicit MiniRangerKMS(std::string host,
+                           std::shared_ptr<postgres::MiniPostgres> mini_pg)
+      : MiniRangerKMS(GetTestDataDirectory(),
+                      std::move(host),
+                      std::move(mini_pg)) {}
 
     ~MiniRangerKMS();
 
     MiniRangerKMS(std::string data_root, std::string host,
-                  std::shared_ptr<postgres::MiniPostgres> mini_pg,
-                  std::shared_ptr<ranger::MiniRanger> mini_ranger)
+                  std::shared_ptr<postgres::MiniPostgres> mini_pg)
       : data_root_(std::move(data_root)),
         host_(std::move(host)),
+        mini_pg_(std::move(mini_pg)),
         env_(Env::Default()) {
           curl_.set_auth(CurlAuthType::BASIC, "admin", "admin");
-          mini_pg_ = mini_pg;
-          mini_ranger_ = mini_ranger;
+          mini_ranger_ = std::make_shared<ranger::MiniRanger>(host_, mini_pg_);
         }
 
     // Starts Ranger and its dependencies.
@@ -58,9 +60,13 @@ class MiniRangerKMS {
     // Stops Ranger and its dependencies.
     Status Stop() WARN_UNUSED_RESULT;
 
+    Status CreateKMSService();
+
+    Status getKeys();
+
   private:
     // Starts RangerKMS Service
-    Status StartRangerKMS(postgres::MiniPostgres* mini_pg) WARN_UNUSED_RESULT;
+    Status StartRangerKMS() WARN_UNUSED_RESULT;
 
     // Initializes Ranger KMS within 'kms_home' (home directory of the Ranger KMS
     // admin). Sets 'fresh_install' to true if 'kms_home' didn't exist before
@@ -69,7 +75,7 @@ class MiniRangerKMS {
 
     // Creates configuration files.
     // ref: https://docs.cloudera.com/HDPDocuments/HDP2/HDP-2.6.5/bk_security/content/ranger_kms_properties.html
-    Status CreateConfigs() WARN_UNUSED_RESULT;
+    Status CreateConfigs(const std::string& conf_dir) WARN_UNUSED_RESULT;
 
     // creates keystores for the KMS
     Status SetupKeystores() WARN_UNUSED_RESULT;
@@ -80,7 +86,7 @@ class MiniRangerKMS {
 
     // Returns RangerKMS' home directory.
     std::string ranger_kms_home() const {
-      return JoinPathSegments(data_root_, "ranger-kms");
+      return JoinPathSegments(data_root_, "ranger_kms");
     }
 
     std::string bin_dir() const {
@@ -98,12 +104,15 @@ class MiniRangerKMS {
       // ${RANGER_KMS_HOME}/ews/webapp/lib/:
       // ${JAVA_HOME}/lib/:
       // ${RANGER_KMS_HADOOP_CONF_DIR}/"
-      //org.apache.ranger.server.tomcat.EmbeddedServer
       return strings::Substitute(
-              "$0:$1/lib/*:$2/lib/*:$3/*:$4:$5",
-              kms_home, JoinPathSegments(ranger_kms_home_, "ews"), java_home_,
-              hadoop_home_, JoinPathSegments(bin_dir(), "postgresql.jar"),
-              JoinPathSegments(ranger_kms_home_, "ews/webapp"));
+              "$0:$1:$2:$3:$4",
+//              JoinPathSegments(kms_home, "ews/webapp/WEB-INF/classes/conf/*"),
+              JoinPathSegments(bin_dir(), "postgresql.jar"),
+              JoinPathSegments(ranger_kms_home_, "ews/webapp/WEB-INF/classes/lib/*"),
+              JoinPathSegments(ranger_kms_home_, "ews/webapp/lib/*"),
+              JoinPathSegments(java_home_, "lib/*"),
+              JoinPathSegments(hadoop_home_, "conf/*"),
+              kms_home);
     }
     // Directory in which to put all our stuff.
     const std::string data_root_;

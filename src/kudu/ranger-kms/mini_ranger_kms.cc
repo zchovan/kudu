@@ -27,7 +27,9 @@
 #include "kudu/util/stopwatch.h"
 #include "kudu/gutil/strings/substitute.h"
 #include "kudu/util/net/net_util.h"
+#include "kudu/util/env_util.h"
 #include "kudu/ranger-kms/mini_ranger_kms_configs.h"
+#include "kudu/util/easy_json.h"
 
 using std::string;
 using std::vector;
@@ -37,8 +39,9 @@ namespace kudu {
 namespace ranger_kms {
 
 Status MiniRangerKMS::Start() {
-  RETURN_NOT_OK_PREPEND(mini_ranger_.Start(), "Failed to start Ranger");
-  return StartRangerKMS(mini_ranger_.mini_pg());
+  RETURN_NOT_OK_PREPEND(mini_ranger_->Start(), "Failed to start Ranger");
+  LOG(INFO) << ">>>>RANGER STARTED<<<<<" << std::endl;
+  return StartRangerKMS();
 }
 
 MiniRangerKMS::~MiniRangerKMS() {
@@ -52,7 +55,7 @@ Status MiniRangerKMS::Stop() {
     LOG(INFO) << "Stopped Ranger KMS";
     process_.reset();
   }
-  return mini_ranger_.Stop();
+  return mini_ranger_->Stop();
 }
 
 Status MiniRangerKMS::InitRangerKMS(std::string kms_home, bool *fresh_install) {
@@ -64,66 +67,109 @@ Status MiniRangerKMS::InitRangerKMS(std::string kms_home, bool *fresh_install) {
 
   RETURN_NOT_OK(env_->CreateDir(kms_home));
 
-  RETURN_NOT_OK(mini_pg_.AddUser("minirangerkms", /*super=*/false));
+  RETURN_NOT_OK(mini_pg_->AddUser("minirangerkms", /*super=*/false));
   LOG(INFO) << "Created minirangerkms Postgres user";
 
-  RETURN_NOT_OK(mini_pg_.CreateDb("rangerkms", "minirangerkms"));
-  LOG(INFO) << "Created rangerkms Postrgres database";
-
-  RETURN_NOT_OK(mini_ranger_.Start());
-  LOG(INFO) << "Started Ranger Admin";
+  RETURN_NOT_OK(mini_pg_->CreateDb("rangerkms", "minirangerkms"));
+  LOG(INFO) << "Created rangerkms Postgres database";
 
   return Status::OK();
 }
 
-Status MiniRangerKMS::CreateConfigs() {
+Status MiniRangerKMS::CreateConfigs(const std::string& conf_dir) {
 
   if (port_ == 0) {
       RETURN_NOT_OK(GetRandomPort(host_, &port_));
   }
 
   string kms_home = ranger_kms_home();
-
   ranger_kms_url_ = Substitute("http://$0:$1", host_, port_);
-  HostPort ranger_admin_url_;
-  ranger_admin_url_.ParseString(mini_ranger_.admin_url(), 6080);
+
+  // Write config files
   RETURN_NOT_OK(WriteStringToFile(
     env_, GetRangerKMSInstallProperties(
             bin_dir(),
             host_,
-            mini_pg_.bound_port(),
-            ranger_admin_url_.host(),
-            ranger_admin_url_.port()),
+            mini_pg_->bound_port(),
+            mini_ranger_->admin_url(),
+            kms_home),
     JoinPathSegments(kms_home, "install.properties")));
 
   RETURN_NOT_OK(WriteStringToFile(
-          env_, GetRangerKMSSiteXml(host_, port_),
+          env_, GetRangerKMSSiteXml(host_, port_, conf_dir),
           JoinPathSegments(kms_home, "ranger-kms-site.xml")));
 
   RETURN_NOT_OK(WriteStringToFile(
-          env_, GetRangerKMSDbksSiteXml(host_, mini_pg_.bound_port(), "postgresql.jar"),
+          env_, GetRangerKMSDbksSiteXml(host_, mini_pg_->bound_port(), "postgresql.jar"),
           JoinPathSegments(kms_home, "dbks-site.xml")));
 
+  RETURN_NOT_OK(WriteStringToFile(
+          env_, GetRangerKMSLog4jProperties("info"),
+          JoinPathSegments(kms_home, "log4j.properties")
+          ));
+
+  RETURN_NOT_OK(WriteStringToFile(
+          env_, GetRangerKMSSecurityXml(mini_ranger_->admin_url(), kms_home),
+          JoinPathSegments(kms_home, "ranger-kms-security.xml")
+          ));
+
+  RETURN_NOT_OK(WriteStringToFile(
+          env_, GetKMSSiteXml(),
+          JoinPathSegments(kms_home, "kms-site.xml")
+          ));
+
+  RETURN_NOT_OK(WriteStringToFile(
+          env_, GetRangerKMSAuditXml(),
+          JoinPathSegments(kms_home, "ranger-kms-audit.xml")
+          ));
+
+  RETURN_NOT_OK(WriteStringToFile(
+          env_, GetRangerKMSPolicymgrSSLXml(),
+          JoinPathSegments(kms_home, "ranger-kms-policymgr-ssl.xml")
+          ));
 
   return Status::OK();
 }
-
-Status MiniRangerKMS::SetupKeystores() {
-
-}
+//
+//Status MiniRangerKMS::SetupKeystores() {
+//
+//}
 
 Status MiniRangerKMS::DbSetup(const std::string &kms_home, const std::string &ews_dir,
                               const std::string &web_app_dir) {
   RETURN_NOT_OK(env_->CreateDir(ews_dir));
-  RETURN_NOT_OK(env_->CreateSymLink(JoinPathSegments(ranger_kms_home_, "ews/webapp").c_str(),
-                                    web_app_dir.c_str()));
+  RETURN_NOT_OK(env_->CreateDir(web_app_dir));
+//  RETURN_NOT_OK(env_->CreateSymLink(JoinPathSegments(ranger_kms_home_, "ews/webapp"),
+//                                    web_app_dir));
+  // copy everything from thirdparty to proc dir
+  WritableFileOptions opts;
+  opts.sync_on_close = true;
+  RETURN_NOT_OK(env_util::CopyDirectory(env_, JoinPathSegments(ranger_kms_home_, "ews/webapp"), web_app_dir, opts ));
+  // replace conf files in proc dir from kms home dir
+
+
 
   Subprocess db_setup(
-          { "python", JoinPathSegments(ranger_kms_home_, "db_setup.py")});
+        { "python", JoinPathSegments(ranger_kms_home_, "db_setup.py")});
+
+  db_setup.SetEnvVars({
+    {"RANGER_KMS_HOME", kms_home},
+    {"RANGER_KMS_CONF", ranger_kms_home_},
+    { "JAVA_HOME", java_home_ },
+  });
+
+  db_setup.SetCurrentDir(kms_home);
+          RETURN_NOT_OK(db_setup.Start());
+  return db_setup.WaitAndCheckExitCode();
 }
 
-Status MiniRangerKMS::StartRangerKMS(postgres::MiniPostgres* mini_pg) {
+Status MiniRangerKMS::StartRangerKMS() {
   bool fresh_install;
+
+  if (!mini_ranger_->isRunning()) {
+    return Status::IllegalState("Ranger is not running");
+  }
+
   LOG_TIMING(INFO, "starting Ranger KMS") {
     LOG(INFO) << "Starting Ranger KMS...";
     string exe;
@@ -139,19 +185,95 @@ Status MiniRangerKMS::StartRangerKMS(postgres::MiniPostgres* mini_pg) {
     const string kWebInfDir = JoinPathSegments(kWebAppDir, "WEB-INF"); // kms_home/ews/webapp/WEB-INF
     const string kClassesDir = JoinPathSegments(kWebInfDir, "classes"); // kms_home/ews/webapp/WEB-INF/classes
     const string kConfDir = JoinPathSegments(kClassesDir, "conf"); // kms_home/ews/webapp/WEB-INF/classes/conf
+    const string kLibDir = JoinPathSegments(kClassesDir, "lib"); // kms_home/ews/webapp/WEB-INF/classes/lib
 
     RETURN_NOT_OK(InitRangerKMS(kKMSHome, &fresh_install));
 
     LOG(INFO) << "Starting Ranger KMS out of " << kKMSHome;
-    LOG(INFO) << "Using postgres at " << mini_pg->host() << ":" << mini_pg->bound_port();
+    LOG(INFO) << "Using postgres at " << mini_pg_->host() << ":" << mini_pg_->bound_port();
 
-    RETURN_NOT_OK(CreateConfigs());
+    RETURN_NOT_OK(CreateConfigs(kConfDir));
 
     if (fresh_install) {
         RETURN_NOT_OK(DbSetup(kKMSHome, kEwsDir, kWebAppDir));
+//        RETURN_NOT_OK(CreateKMSService());
     }
 
+    string classpath = ranger_kms_classpath();
+
+    LOG(INFO) << "Using RangerKMS classpath: " << classpath;
+
+    LOG(INFO) << "Using host: " << host_;
+
+    // @todo(zchovan): add link to source
+    std::vector<string> args({
+      JoinPathSegments(java_home_, "bin/java"),
+      "-Dproc_rangerkms",
+      Substitute("-Dhostname=$0", host_),
+      Substitute("-Dlog4j.configuration=file:$0",
+                  JoinPathSegments(kKMSHome, "log4j.properties")),
+      "-Duser=minirangerkms",
+      "-Dservername=minirangerkms",
+      Substitute("-Dcatalina.base=$0", kEwsDir),
+      Substitute("-Dkms.config.dir=$0", kConfDir),
+      Substitute("-Dlogdir=$0", JoinPathSegments(kKMSHome, "logs")),
+    });
+
+    // @todo(zchovan): add kerberos
+    args.emplace_back("-cp");
+    args.emplace_back(classpath);
+    args.emplace_back("org.apache.ranger.server.tomcat.EmbeddedServer");
+    args.emplace_back("ranger-kms-site.xml");
+    process_.reset(new Subprocess(args));
+    process_->SetEnvVars({
+         { "JAVA_HOME", java_home_ },
+         { "RANGER_KMS_PID_NAME", "rangerkms.pid" },
+         { "KMS_CONF_DIR", kKMSHome },
+         { "RANGER_USER", "miniranger" },
+         { "RANGER_KMS_DIR", ranger_kms_home_},
+         { "RANGER_KMS_EWS_DIR", kEwsDir},
+         { "RANGER_KMS_EWS_CONF_DIR", kConfDir },
+         { "RANGER_KMS_EWS_LIB_DIR", kLibDir }
+    });
+    RETURN_NOT_OK(process_->Start());
+    LOG(INFO) << "Ranger KMS PID: " << process_->pid() << std::endl;
+    uint16_t port;
+            RETURN_NOT_OK(WaitForTcpBind(process_->pid(),
+                                         &port,
+                                         { "0.0.0.0", "127.0.0.1", },
+                                         MonoDelta::FromMilliseconds(90000)));
+    LOG(INFO) << "Ranger KMS bound to " << port;
+    LOG(INFO) << "Ranger KMS URL: " << ranger_kms_url_;
   }
+
+  return Status::OK();
+}
+
+Status MiniRangerKMS::CreateKMSService() {
+  EasyJson service;
+  service.Set("name", "kmsdev");
+  service.Set("type", "kmsdev");
+  // The below config authorizes "kudu" to download the list of authorized users
+  // for policies and tags respectively.
+  EasyJson configs = service.Set("configs", EasyJson::kObject);
+  configs.Set("policy.download.auth.users", "kmsdev");
+  configs.Set("tag.download.auth.users", "kmsdev");
+
+          RETURN_NOT_OK_PREPEND(mini_ranger_->PostToRanger("service/plugins/services", service),
+                                "Failed to create KMS service");
+  LOG(INFO) << "Created KMS service";
+  return Status::OK();
+}
+
+Status MiniRangerKMS::getKeys() {
+  EasyCurl curl;
+  faststring response;
+
+  curl.FetchURL(Substitute("$0:$1/v1/key/names", host_, port_), &response);
+  LOG(INFO) << "response: ";
+  LOG(INFO) << response << std::endl;
+
+  return Status::OK();
 }
 
 } // namespace ranger_kms

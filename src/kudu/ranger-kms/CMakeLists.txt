@@ -19,6 +19,9 @@
 #######################################
 # mini_ranger_kms
 #######################################
+execute_process(COMMAND ln -nsf
+        "${THIRDPARTY_DIR}/installed/common/opt/ranger-kms"
+        "${EXECUTABLE_OUTPUT_PATH}/ranger_kms-home")
 
 set(MINI_RANGER_KMS_SRCS
         mini_ranger_kms.cc)

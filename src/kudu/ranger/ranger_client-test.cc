@@ -353,7 +353,7 @@ class RangerClientTestBase : public KuduTest {
   }
 
   Status InitializeRanger() {
-    ranger_.reset(new MiniRanger("127.0.0.1"));
+    ranger_.reset(new MiniRanger("127.0.0.1", std::shared_ptr<MiniPostgres>(new MiniPostgres("127.0.0.1"))));
     RETURN_NOT_OK(ranger_->Start());
     // Create a policy so the Ranger client policy refresher can pick something
     // up. In some environments the absense of policies can cause the plugin to

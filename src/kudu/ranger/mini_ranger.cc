@@ -52,7 +52,9 @@ namespace kudu {
 namespace ranger {
 
 Status MiniRanger::Start() {
+  LOG(INFO) << ">>>>STARTING POSTGRES<<<<" << std::endl;
   RETURN_NOT_OK_PREPEND(mini_pg_->Start(), "Failed to start Postgres");
+  LOG(INFO) << ">>>>POSTGRES STARTED<<<<<" << std::endl;
   return StartRanger();
 }
 
