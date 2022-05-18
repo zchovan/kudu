@@ -73,7 +73,9 @@ Rebalancer::Config::Config(vector<string> ignored_tservers_param,
                            bool run_cross_location_rebalancing,
                            bool run_intra_location_rebalancing,
                            double load_imbalance_threshold,
-                           bool force_rebalance_replicas_on_maintenance_tservers)
+                           bool force_rebalance_replicas_on_maintenance_tservers,
+                           size_t intra_location_rebalancing_concurrency,
+                           bool enable_range_rebalancing)
     : ignored_tservers(ignored_tservers_param.begin(), ignored_tservers_param.end()),
       master_addresses(std::move(master_addresses)),
       table_filters(std::move(table_filters)),
@@ -88,7 +90,10 @@ Rebalancer::Config::Config(vector<string> ignored_tservers_param,
       run_intra_location_rebalancing(run_intra_location_rebalancing),
       load_imbalance_threshold(load_imbalance_threshold),
       force_rebalance_replicas_on_maintenance_tservers(
-          force_rebalance_replicas_on_maintenance_tservers) {
+          force_rebalance_replicas_on_maintenance_tservers),
+      intra_location_rebalancing_concurrency(
+          intra_location_rebalancing_concurrency),
+      enable_range_rebalancing(enable_range_rebalancing) {
   DCHECK_GE(max_moves_per_server, 0);
 }
 
@@ -111,7 +116,9 @@ Rebalancer::Rebalancer(Config config)
 void Rebalancer::FindReplicas(const TableReplicaMove& move,
                               const ClusterRawInfo& raw_info,
                               vector<string>* tablet_ids) {
+  const bool is_range_rebalancing = config_.enable_range_rebalancing;
   const auto& table_id = move.table_id;
+  const auto& tag = move.tag;
 
   // Tablet ids of replicas on the source tserver that are non-leaders.
   vector<string> tablet_uuids_src;
@@ -122,6 +129,9 @@ void Rebalancer::FindReplicas(const TableReplicaMove& move,
 
   for (const auto& tablet_summary : raw_info.tablet_summaries) {
     if (tablet_summary.table_id != table_id) {
+      continue;
+    }
+    if (is_range_rebalancing && tablet_summary.range_key_begin != tag) {
       continue;
     }
     if (tablet_summary.result != HealthCheckResult::HEALTHY) {
@@ -280,13 +290,20 @@ Status Rebalancer::BuildClusterInfo(const ClusterRawInfo& raw_info,
   DCHECK(info);
 
   // tserver UUID --> total replica count of all table's tablets at the server
+  // (tagged context applies here)
   typedef unordered_map<string, int32_t> TableReplicasAtServer;
 
   // The result information to build.
   ClusterInfo result_info;
 
+  // tserver UUID --> total count of replicas at the server
   unordered_map<string, int32_t> tserver_replicas_count;
-  unordered_map<string, TableReplicasAtServer> table_replicas_info;
+
+  // table_id.range_key --> count of tablet replicas of the table at tservers
+  unordered_map<TableIdAndTag, TableReplicasAtServer,
+      TableIdAndTagHash, TableIdAndTagEqual> table_replicas_info;
+
+  // UUIDs of unhealthy tablet servers.
   unordered_set<string> unhealthy_tablet_servers;
 
   // Build a set of tables with RF=1 (single replica tables).
@@ -321,7 +338,8 @@ Status Rebalancer::BuildClusterInfo(const ClusterRawInfo& raw_info,
       skipped_tserver_msgs.emplace_back(
           Substitute("skipping tablet server $0 ($1) because of its "
                      "non-HEALTHY status ($2)",
-                     s.uuid, s.address,
+                     s.uuid,
+                     s.address,
                      ServerHealthToString(s.health)));
       unhealthy_tablet_servers.emplace(s.uuid);
       continue;
@@ -364,7 +382,10 @@ Status Rebalancer::BuildClusterInfo(const ClusterRawInfo& raw_info,
           it != tserver_replicas_count.end()) {
         it->second++;
         auto table_ins = table_replicas_info.emplace(
-            tablet.table_id, TableReplicasAtServer());
+            TableIdAndTag{ tablet.table_id,
+                           config_.enable_range_rebalancing
+                               ? tablet.range_key_begin : "" },
+            TableReplicasAtServer());
         TableReplicasAtServer& replicas_at_server = table_ins.first->second;
 
         auto replicas_ins = replicas_at_server.emplace(move_info.ts_uuid_to, 0);
@@ -400,7 +421,8 @@ Status Rebalancer::BuildClusterInfo(const ClusterRawInfo& raw_info,
       }
 
       auto table_ins = table_replicas_info.emplace(
-          tablet.table_id, TableReplicasAtServer());
+          TableIdAndTag{tablet.table_id, tablet.range_key_begin},
+          TableReplicasAtServer());
       TableReplicasAtServer& replicas_at_server = table_ins.first->second;
 
       auto replicas_ins = replicas_at_server.emplace(ri.ts_uuid, 0);
@@ -435,11 +457,13 @@ Status Rebalancer::BuildClusterInfo(const ClusterRawInfo& raw_info,
   // Populate ClusterBalanceInfo::table_info_by_skew
   auto& table_info_by_skew = result_info.balance.table_info_by_skew;
   for (const auto& elem : table_replicas_info) {
-    const auto& table_id = elem.first;
+    const auto& table_id = elem.first.table_id;
+    const auto& tag = elem.first.tag;
     int32_t max_count = numeric_limits<int32_t>::min();
     int32_t min_count = numeric_limits<int32_t>::max();
     TableBalanceInfo tbi;
     tbi.table_id = table_id;
+    tbi.tag = tag;
     for (const auto& e : elem.second) {
       const auto& ts_uuid = e.first;
       const auto replica_count = e.second;
@@ -454,23 +478,63 @@ Status Rebalancer::BuildClusterInfo(const ClusterRawInfo& raw_info,
     table_info_by_skew.emplace(max_count - min_count, std::move(tbi));
   }
 
-  // Populate ClusterInfo::tservers_to_empty.
-  // TODO(zhangyifan): extract this to a seperate method.
-  if (config_.move_replicas_from_ignored_tservers) {
-    auto& tservers_to_empty = result_info.tservers_to_empty;
-    for (const auto& ignored_tserver : config_.ignored_tservers) {
-      if (ContainsKey(unhealthy_tablet_servers, ignored_tserver)) {
-        continue;
-      }
-      int replica_count = FindWithDefault(tserver_replicas_count, ignored_tserver, 0);
-      tservers_to_empty.emplace(ignored_tserver, replica_count);
-    }
-  }
-
   // TODO(aserbin): add sanity checks on the result.
   *info = std::move(result_info);
 
   return Status::OK();
+}
+
+void Rebalancer::GetTServersToEmpty(const ClusterRawInfo& raw_info,
+                                    unordered_set<string>* tservers_to_empty) const {
+  DCHECK(tservers_to_empty);
+  tservers_to_empty->clear();
+  for (const auto& ts_summary : raw_info.tserver_summaries) {
+    if (ts_summary.health == ServerHealth::HEALTHY &&
+        ContainsKey(config_.ignored_tservers, ts_summary.uuid)) {
+      tservers_to_empty->emplace(ts_summary.uuid);
+    }
+  }
+}
+
+void Rebalancer::BuildTServersToEmptyInfo(const ClusterRawInfo& raw_info,
+                                          const MovesInProgress& moves_in_progress,
+                                          const unordered_set<string>& tservers_to_empty,
+                                          TServersToEmptyMap* tservers_to_empty_map) {
+  DCHECK(tservers_to_empty_map);
+  tservers_to_empty_map->clear();
+  for (const auto& tablet_summary : raw_info.tablet_summaries) {
+    if (ContainsKey(moves_in_progress, tablet_summary.id)) {
+      continue;
+    }
+    if (tablet_summary.result != cluster_summary::HealthCheckResult::HEALTHY &&
+        tablet_summary.result != cluster_summary::HealthCheckResult::RECOVERING) {
+      LOG(INFO) << Substitute(
+          "tablet $0: not considering replicas for movement "
+          "since the tablet's status is '$1'",
+          tablet_summary.id,
+          cluster_summary::HealthCheckResultToString(tablet_summary.result));
+      continue;
+    }
+    TabletInfo tablet_info;
+    for (const auto& replica_info : tablet_summary.replicas) {
+      if (replica_info.is_leader && replica_info.consensus_state) {
+        const auto& cstate = *replica_info.consensus_state;
+        if (cstate.opid_index) {
+          tablet_info.tablet_id = tablet_summary.id;
+          tablet_info.config_idx = *cstate.opid_index;
+          break;
+        }
+      }
+    }
+    for (const auto& replica_info : tablet_summary.replicas) {
+      if (!ContainsKey(tservers_to_empty, replica_info.ts_uuid)) {
+        continue;
+      }
+      auto& tablets =
+          LookupOrEmplace(tservers_to_empty_map, replica_info.ts_uuid, vector<TabletInfo>());
+      tablets.emplace_back(tablet_info);
+    }
+  }
 }
 
 void BuildTabletExtraInfoMap(

@@ -151,6 +151,9 @@ message SysTabletsEntryPB {
   // The dimension label for the tablet. Used for dimension-specific
   // placement of the tablet's replicas.
   optional string dimension_label = 8;
+
+  // The delete time of the tablet, in seconds since the epoch.
+  optional int64 delete_timestamp = 9;
 }
 
 // The on-disk entry in the sys.catalog table ("metadata" column) for
@@ -215,6 +218,9 @@ message SysTablesEntryPB {
 
   // The comment on the table.
   optional string comment = 17;
+
+  // The delete time of the table, in seconds since the epoch.
+  optional int64 delete_timestamp = 18;
 }
 
 // The on-disk entry in the sys.catalog table ("metadata" column) to represent
@@ -726,6 +732,9 @@ message AlterTableRequestPB {
     // The dimension label for the tablet. Used for dimension-specific placement
     // of the tablet's replicas.
     optional string dimension_label = 2;
+
+    // The custom hash partition schema for the range if specified.
+    repeated PartitionSchemaPB.HashBucketSchemaPB custom_hash_schema = 3;
   }
   message DropRangePartition {
     // A set of row operations containing the lower and upper range bound for
@@ -1070,6 +1079,22 @@ message RefreshAuthzCacheResponsePB {
   optional MasterErrorPB error = 1;
 }
 
+// RemoveTabletServerRequest/Response: remove a tablet server from master's
+// in-memory map and persisted catalog.
+message UnregisterTServerRequestPB {
+  // The tserver UUID to be unregistered.
+  optional string uuid = 1;
+
+  // Whether to return an error in case the tserver is not presumed to be dead,
+  // per --tserver_unresponsive_timeout_ms.
+  // Disable this by default to make sure the tserver has been brought down.
+  optional bool force_unregister_live_tserver = 2 [default = false];
+}
+
+message UnregisterTServerResponsePB {
+  optional MasterErrorPB error = 1;
+}
+
 enum MasterFeatures {
   UNKNOWN_FEATURE = 0;
   // The master supports creating tables with non-covering range partitions.
@@ -1181,6 +1206,10 @@ service MasterService {
 
   // Remove a master from the existing cluster.
   rpc RemoveMaster(RemoveMasterRequestPB) returns (RemoveMasterResponsePB) {
+    option (kudu.rpc.authz_method) = "AuthorizeSuperUser";
+  }
+
+  rpc UnregisterTServer(UnregisterTServerRequestPB) returns (UnregisterTServerResponsePB) {
     option (kudu.rpc.authz_method) = "AuthorizeSuperUser";
   }
 

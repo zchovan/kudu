@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+#include <cstring>
 #include <sys/stat.h>
 
 #include <algorithm>
@@ -143,6 +144,8 @@ DECLARE_bool(hive_metastore_sasl_enabled);
 DECLARE_bool(show_values);
 DECLARE_bool(show_attributes);
 DECLARE_int32(catalog_manager_inject_latency_load_ca_info_ms);
+DECLARE_int32(heartbeat_interval_ms);
+DECLARE_int32(tserver_unresponsive_timeout_ms);
 DECLARE_int32(rpc_negotiation_inject_delay_ms);
 DECLARE_string(block_manager);
 DECLARE_string(hive_metastore_uris);
@@ -289,7 +292,7 @@ class ToolTest : public KuduTest {
     Status s = RunTool(arg_str, stdout, &stderr, nullptr, nullptr);
     SCOPED_TRACE(*stdout);
     SCOPED_TRACE(stderr);
-    ASSERT_OK(s);
+    ASSERT_TRUE(s.ok()) << arg_str;
   }
 
   void RunActionStdinStdoutString(const string& arg_str, const string& stdin,
@@ -308,6 +311,10 @@ class ToolTest : public KuduTest {
   Status RunActionStdoutStderrString(const string& arg_str, string* stdout,
                                      string* stderr) const {
     return RunTool(arg_str, stdout, stderr, nullptr, nullptr);
+  }
+
+  string GetEncryptionArgs() {
+    return "--encrypt_data_at_rest=true";
   }
 
   void RunActionStdoutLines(const string& arg_str, vector<string>* stdout_lines) const {
@@ -510,6 +517,7 @@ class ToolTest : public KuduTest {
     int64_t max_value;
     string columns;
     TableCopyMode mode;
+    int32_t create_table_replication_factor;
   };
 
   void RunCopyTableCheck(const RunCopyTableCheckArgs& args) {
@@ -559,14 +567,15 @@ class ToolTest : public KuduTest {
     string stdout;
     NO_FATALS(RunActionStdoutString(
                 Substitute("table copy $0 $1 $2 -dst_table=$3 -predicates=$4 -write_type=$5 "
-                           "-create_table=$6",
+                           "-create_table=$6 -create_table_replication_factor=$7",
                            cluster_->master()->bound_rpc_addr().ToString(),
                            args.src_table_name,
                            cluster_->master()->bound_rpc_addr().ToString(),
                            kDstTableName,
                            args.predicates_json,
                            write_type,
-                           create_table),
+                           create_table,
+                           args.create_table_replication_factor),
                 &stdout));
 
     // Check total count.
@@ -592,10 +601,15 @@ class ToolTest : public KuduTest {
                    cluster_->master()->bound_rpc_addr().ToString(),
                    kDstTableName), &dst_schema));
 
-      // Remove the first lines, which are the different table names.
-      src_schema.erase(src_schema.begin());
-      dst_schema.erase(dst_schema.begin());
-      ASSERT_EQ(src_schema, dst_schema);
+      ASSERT_EQ(src_schema.size(), dst_schema.size());
+      for (int i = 0; i < src_schema.size(); ++i) {
+        // Table name is different.
+        if (HasPrefixString(src_schema[i], "TABLE ")) continue;
+        // Replication factor is different when explicitly set it to 3 (default 1).
+        if (args.create_table_replication_factor == 3 &&
+            HasPrefixString(src_schema[i], "REPLICAS ")) continue;
+        ASSERT_EQ(src_schema[i], dst_schema[i]);
+      }
     }
 
     // Check all values.
@@ -657,6 +671,14 @@ class ToolTest : public KuduTest {
     ASSERT_STR_CONTAINS(stderr, expect_err);
   }
 
+  string GetMasterAddrsStr() {
+    vector<string> master_addrs;
+    for (const auto& hp : mini_cluster_->master_rpc_addrs()) {
+      master_addrs.emplace_back(hp.ToString());
+    }
+    return JoinStrings(master_addrs, ",");
+  }
+
  protected:
   // Note: Each test case must have a single invocation of RunLoadgen() otherwise it leads to
   //       memory leaks.
@@ -667,6 +689,7 @@ class ToolTest : public KuduTest {
                   string* tool_stderr = nullptr);
   void StartExternalMiniCluster(ExternalMiniClusterOptions opts = {});
   void StartMiniCluster(InternalMiniClusterOptions opts = {});
+  void StopMiniCluster();
   unique_ptr<ExternalMiniCluster> cluster_;
   unique_ptr<MiniClusterFsInspector> inspect_;
   unordered_map<string, TServerDetails*> ts_map_;
@@ -692,6 +715,7 @@ enum RunCopyTableCheckArgsType {
   kTestCopyTableUpsert,
   kTestCopyTableSchemaOnly,
   kTestCopyTableComplexSchema,
+  kTestCopyUnpartitionedTable,
   kTestCopyTablePredicates
 };
 // Subclass of ToolTest that allows running individual test cases with different parameters to run
@@ -702,7 +726,13 @@ class ToolTestCopyTableParameterized :
  public:
   void SetUp() override {
     test_case_ = GetParam();
-    NO_FATALS(StartExternalMiniCluster());
+    ExternalMiniClusterOptions opts;
+    if (test_case_ == kTestCopyTableSchemaOnly) {
+      // In kTestCopyTableSchemaOnly case, we may create table with RF=3,
+      // means 3 tservers needed at least.
+      opts.num_tablet_servers = 3;
+    }
+    NO_FATALS(StartExternalMiniCluster(opts));
 
     // Create the src table and write some data to it.
     TestWorkload ww(cluster_.get());
@@ -714,6 +744,10 @@ class ToolTestCopyTableParameterized :
     if (test_case_ == kTestCopyTableComplexSchema) {
       KuduSchema schema;
       ASSERT_OK(CreateComplexSchema(&schema));
+      ww.set_schema(schema);
+    } else if (test_case_ == kTestCopyUnpartitionedTable) {
+      KuduSchema schema;
+      ASSERT_OK(CreateUnpartitionedTable(&schema));
       ww.set_schema(schema);
     }
     ww.Setup();
@@ -736,7 +770,8 @@ class ToolTestCopyTableParameterized :
                                    1,
                                    total_rows_,
                                    kSimpleSchemaColumns,
-                                   TableCopyMode::INSERT_TO_EXIST_TABLE };
+                                   TableCopyMode::INSERT_TO_EXIST_TABLE,
+                                   -1 };
     switch (test_case_) {
       case kTestCopyTableDstTableExist:
         return { args };
@@ -746,13 +781,32 @@ class ToolTestCopyTableParameterized :
       case kTestCopyTableUpsert:
         args.mode = TableCopyMode::UPSERT_TO_EXIST_TABLE;
         return { args };
-      case kTestCopyTableSchemaOnly:
+      case kTestCopyTableSchemaOnly: {
         args.mode = TableCopyMode::COPY_SCHEMA_ONLY;
-        return { args };
+        vector<RunCopyTableCheckArgs> multi_args;
+        {
+          auto args_temp = args;
+          multi_args.emplace_back(std::move(args_temp));
+        }
+        {
+          auto args_temp = args;
+          args_temp.create_table_replication_factor = 1;
+          multi_args.emplace_back(std::move(args_temp));
+        }
+        {
+          auto args_temp = args;
+          args_temp.create_table_replication_factor = 3;
+          multi_args.emplace_back(std::move(args_temp));
+        }
+        return multi_args;
+      }
       case kTestCopyTableComplexSchema:
         args.columns = kComplexSchemaColumns;
         args.mode = TableCopyMode::INSERT_TO_NOT_EXIST_TABLE;
         return { args };
+      case kTestCopyUnpartitionedTable:
+        args.mode = TableCopyMode::INSERT_TO_NOT_EXIST_TABLE;
+        return {args};
       case kTestCopyTablePredicates: {
         auto mid = total_rows_ / 2;
         vector<RunCopyTableCheckArgs> multi_args;
@@ -892,6 +946,19 @@ class ToolTestCopyTableParameterized :
     return Status::OK();
   }
 
+  Status CreateUnpartitionedTable(KuduSchema* schema) {
+    shared_ptr<KuduClient> client;
+    RETURN_NOT_OK(cluster_->CreateClient(nullptr, &client));
+    unique_ptr<KuduTableCreator> table_creator(client->NewTableCreator());
+    *schema = KuduSchema::FromSchema(GetSimpleTestSchema());
+    RETURN_NOT_OK(table_creator->table_name(kTableName)
+                      .schema(schema)
+                      .set_range_partition_columns({})
+                      .num_replicas(1)
+                      .Create());
+    return Status::OK();
+  }
+
   void InsertOneRowWithNullCell() {
     shared_ptr<KuduClient> client;
     ASSERT_OK(cluster_->CreateClient(nullptr, &client));
@@ -926,6 +993,7 @@ INSTANTIATE_TEST_SUITE_P(CopyTableParameterized,
                                            kTestCopyTableUpsert,
                                            kTestCopyTableSchemaOnly,
                                            kTestCopyTableComplexSchema,
+                                           kTestCopyUnpartitionedTable,
                                            kTestCopyTablePredicates));
 
 void ToolTest::StartExternalMiniCluster(ExternalMiniClusterOptions opts) {
@@ -940,6 +1008,10 @@ void ToolTest::StartExternalMiniCluster(ExternalMiniClusterOptions opts) {
 void ToolTest::StartMiniCluster(InternalMiniClusterOptions opts) {
   mini_cluster_.reset(new InternalMiniCluster(env_, std::move(opts)));
   ASSERT_OK(mini_cluster_->Start());
+}
+
+void ToolTest::StopMiniCluster() {
+  mini_cluster_->Shutdown();
 }
 
 TEST_F(ToolTest, TestHelpXML) {
@@ -1060,7 +1132,8 @@ TEST_F(ToolTest, TestModeHelp) {
         "cmeta.*Operate on a local tablet replica's consensus",
         "data_size.*Summarize the data size",
         "dump.*Dump a Kudu filesystem",
-        "copy_from_remote.*Copy a tablet replica",
+        "copy_from_remote.*Copy a tablet replica from a remote server",
+        "copy_from_local.*Copy tablet replicas from local filesystem",
         "delete.*Delete tablet replicas from the local filesystem",
         "list.*Show list of tablet replicas",
     };
@@ -1094,6 +1167,16 @@ TEST_F(ToolTest, TestModeHelp) {
                           kLocalReplicaCopyFromRemoteRegexes));
     // Try with hyphens instead of underscores.
     NO_FATALS(RunTestHelp("local-replica copy-from-remote --help",
+                          kLocalReplicaCopyFromRemoteRegexes));
+  }
+  {
+    const vector<string> kLocalReplicaCopyFromRemoteRegexes = {
+        "Copy tablet replicas from local filesystem",
+    };
+    NO_FATALS(RunTestHelp("local_replica copy_from_local --help",
+                          kLocalReplicaCopyFromRemoteRegexes));
+    // Try with hyphens instead of underscores.
+    NO_FATALS(RunTestHelp("local-replica copy-from-local --help",
                           kLocalReplicaCopyFromRemoteRegexes));
   }
   {
@@ -1388,9 +1471,11 @@ TEST_F(ToolTest, TestFsCheck) {
     harness.tablet()->Shutdown();
   }
 
+  string encryption_args = env_->IsEncryptionEnabled() ? GetEncryptionArgs() : "";
+
   // Check the filesystem; all the blocks should be accounted for, and there
   // should be no blocks missing or orphaned.
-  NO_FATALS(RunFsCheck(Substitute("fs check --fs_wal_dir=$0", kTestDir),
+  NO_FATALS(RunFsCheck(Substitute("fs check --fs_wal_dir=$0 $1", kTestDir, encryption_args),
                        block_ids.size(), kTabletId, {}, 0));
 
   // Delete half of the blocks. Upon the next check we can only find half, and
@@ -1410,7 +1495,7 @@ TEST_F(ToolTest, TestFsCheck) {
     }
     deletion_transaction->CommitDeletedBlocks(&missing_ids);
   }
-  NO_FATALS(RunFsCheck(Substitute("fs check --fs_wal_dir=$0", kTestDir),
+  NO_FATALS(RunFsCheck(Substitute("fs check --fs_wal_dir=$0 $1", kTestDir, encryption_args),
                        block_ids.size() / 2, kTabletId, missing_ids, 0));
 
   // Delete the tablet superblock. The next check finds half of the blocks,
@@ -1425,15 +1510,16 @@ TEST_F(ToolTest, TestFsCheck) {
     ASSERT_OK(env_->DeleteFile(fs.GetTabletMetadataPath(kTabletId)));
   }
   for (int i = 0; i < 2; i++) {
-    NO_FATALS(RunFsCheck(Substitute("fs check --fs_wal_dir=$0", kTestDir),
+    NO_FATALS(RunFsCheck(Substitute("fs check --fs_wal_dir=$0 $1", kTestDir, encryption_args),
                          block_ids.size() / 2, kTabletId, {}, block_ids.size() / 2));
   }
 
   // Repair the filesystem. The remaining half of all blocks were found, deemed
   // to be orphaned, and deleted. The next check shows no remaining blocks.
-  NO_FATALS(RunFsCheck(Substitute("fs check --fs_wal_dir=$0 --repair", kTestDir),
+  NO_FATALS(RunFsCheck(Substitute("fs check --fs_wal_dir=$0 $1 --repair", kTestDir,
+                                  encryption_args),
                        block_ids.size() / 2, kTabletId, {}, block_ids.size() / 2));
-  NO_FATALS(RunFsCheck(Substitute("fs check --fs_wal_dir=$0", kTestDir),
+  NO_FATALS(RunFsCheck(Substitute("fs check --fs_wal_dir=$0 $1", kTestDir, encryption_args),
                        0, kTabletId, {}, 0));
 }
 
@@ -1725,11 +1811,13 @@ TEST_F(ToolTest, TestPbcToolsOnMultipleBlocks) {
     metadata_path = metadata_files[0];
   }
 
+  string encryption_args = env_->IsEncryptionEnabled() ? GetEncryptionArgs() : "";
+
   // Test default dump
   {
     vector<string> stdout;
     NO_FATALS(RunActionStdoutLines(Substitute(
-        "pbc dump $0", metadata_path), &stdout));
+        "pbc dump $0 $1", metadata_path, encryption_args), &stdout));
     ASSERT_EQ(kNumCFileBlocks * 10 - 1, stdout.size());
     ASSERT_EQ("Message 0", stdout[0]);
     ASSERT_EQ("-------", stdout[1]);
@@ -1738,7 +1826,7 @@ TEST_F(ToolTest, TestPbcToolsOnMultipleBlocks) {
     ASSERT_EQ("}", stdout[4]);
     ASSERT_EQ("op_type: CREATE", stdout[5]);
     ASSERT_STR_MATCHES(stdout[6], "^timestamp_us: [0-9]+$");
-    ASSERT_EQ("offset: 0", stdout[7]);
+    ASSERT_STR_MATCHES(stdout[7], "^offset: [0-9]+$");
     ASSERT_EQ("length: 153", stdout[8]);
     ASSERT_EQ("", stdout[9]);
   }
@@ -1747,7 +1835,7 @@ TEST_F(ToolTest, TestPbcToolsOnMultipleBlocks) {
   {
     vector<string> stdout;
     NO_FATALS(RunActionStdoutLines(Substitute(
-        "pbc dump $0 --debug", metadata_path), &stdout));
+        "pbc dump $0 $1 --debug", metadata_path, encryption_args), &stdout));
     ASSERT_EQ(kNumCFileBlocks * 12 + 5, stdout.size());
     // Header
     ASSERT_EQ("File header", stdout[0]);
@@ -1766,7 +1854,7 @@ TEST_F(ToolTest, TestPbcToolsOnMultipleBlocks) {
     ASSERT_EQ("}", stdout[12]);
     ASSERT_EQ("op_type: CREATE", stdout[13]);
     ASSERT_STR_MATCHES(stdout[14], "^timestamp_us: [0-9]+$");
-    ASSERT_EQ("offset: 0", stdout[15]);
+    ASSERT_STR_MATCHES(stdout[15], "^offset: [0-9]+$");
     ASSERT_EQ("length: 153", stdout[16]);
     ASSERT_EQ("", stdout[17]);
   }
@@ -1775,29 +1863,29 @@ TEST_F(ToolTest, TestPbcToolsOnMultipleBlocks) {
   {
     vector<string> stdout;
     NO_FATALS(RunActionStdoutLines(Substitute(
-        "pbc dump $0 --oneline", metadata_path), &stdout));
+        "pbc dump $0 $1 --oneline", metadata_path, encryption_args), &stdout));
     ASSERT_EQ(kNumCFileBlocks, stdout.size());
     ASSERT_STR_MATCHES(stdout[0],
         "^0\tblock_id \\{ id: [0-9]+ \\} op_type: CREATE "
-        "timestamp_us: [0-9]+ offset: 0 length: 153$");
+        "timestamp_us: [0-9]+ offset: [0-9]+ length: 153$");
   }
 
   // Test dump --json
   {
     vector<string> stdout;
     NO_FATALS(RunActionStdoutLines(Substitute(
-        "pbc dump $0 --json", metadata_path), &stdout));
+        "pbc dump $0 $1 --json", metadata_path, encryption_args), &stdout));
     ASSERT_EQ(kNumCFileBlocks, stdout.size());
     ASSERT_STR_MATCHES(stdout[0],
         R"(^\{"blockId":\{"id":"[0-9]+"\},"opType":"CREATE",)"
-        R"("timestampUs":"[0-9]+","offset":"0","length":"153"\}$$)");
+        R"("timestampUs":"[0-9]+","offset":"[0-9]+","length":"153"\}$$)");
   }
 
   // Test dump --json_pretty
   {
     vector<string> stdout;
     NO_FATALS(RunActionStdoutLines(Substitute(
-        "pbc dump $0 --json_pretty", metadata_path), &stdout));
+        "pbc dump $0 $1 --json_pretty", metadata_path, encryption_args), &stdout));
     ASSERT_EQ(kNumCFileBlocks * 10 - 1, stdout.size());
     ASSERT_EQ("{", stdout[0]);
     ASSERT_EQ(R"( "blockId": {)", stdout[1]);
@@ -1805,7 +1893,7 @@ TEST_F(ToolTest, TestPbcToolsOnMultipleBlocks) {
     ASSERT_EQ(" },", stdout[3]);
     ASSERT_EQ(R"( "opType": "CREATE",)", stdout[4]);
     ASSERT_STR_MATCHES(stdout[5], R"( "timestampUs": "[0-9]+",)");
-    ASSERT_EQ(R"( "offset": "0",)", stdout[6]);
+    ASSERT_STR_MATCHES(stdout[6], R"( "offset": "[0-9]+",)");
     ASSERT_EQ(R"( "length": "153")", stdout[7]);
     ASSERT_EQ(R"(})", stdout[8]);
     ASSERT_EQ("", stdout[9]);
@@ -1820,7 +1908,7 @@ TEST_F(ToolTest, TestPbcToolsOnMultipleBlocks) {
                                editor_path));
     chmod(editor_path.c_str(), 0755);
     setenv("EDITOR", editor_path.c_str(), /* overwrite */1);
-    return RunTool(Substitute("pbc edit $0 $1", extra_flags, metadata_path),
+    return RunTool(Substitute("pbc edit $0 $1 $2", extra_flags, metadata_path, encryption_args),
                    stdout, stderr, nullptr, nullptr);
   };
 
@@ -1834,11 +1922,11 @@ TEST_F(ToolTest, TestPbcToolsOnMultipleBlocks) {
     // Dump to make sure the edit took place.
     vector<string> stdout_lines;
     NO_FATALS(RunActionStdoutLines(Substitute(
-        "pbc dump $0 --oneline", metadata_path), &stdout_lines));
+        "pbc dump $0 $1 --oneline", metadata_path, encryption_args), &stdout_lines));
     ASSERT_EQ(kNumCFileBlocks, stdout_lines.size());
     ASSERT_STR_MATCHES(stdout_lines[0],
                        "^0\tblock_id \\{ id: [0-9]+ \\} op_type: DELETE "
-                       "timestamp_us: [0-9]+ offset: 0 length: 153$");
+                       "timestamp_us: [0-9]+ offset: [0-9]+ length: 153$");
 
     // Make sure no backup file was written.
     bool found_backup;
@@ -1856,11 +1944,11 @@ TEST_F(ToolTest, TestPbcToolsOnMultipleBlocks) {
     // Dump to make sure the edit took place.
     vector<string> stdout_lines;
     NO_FATALS(RunActionStdoutLines(Substitute(
-        "pbc dump $0 --oneline", metadata_path), &stdout_lines));
+        "pbc dump $0 $1 --oneline", metadata_path, encryption_args), &stdout_lines));
     ASSERT_EQ(kNumCFileBlocks, stdout_lines.size());
     ASSERT_STR_MATCHES(stdout_lines[0],
                        "^0\tblock_id \\{ id: [0-9]+ \\} op_type: CREATE "
-                       "timestamp_us: [0-9]+ offset: 0 length: 153$");
+                       "timestamp_us: [0-9]+ offset: [0-9]+ length: 153$");
 
     // Make sure no backup file was written.
     bool found_backup;
@@ -1914,11 +2002,11 @@ TEST_F(ToolTest, TestPbcToolsOnMultipleBlocks) {
   {
     vector<string> stdout;
     NO_FATALS(RunActionStdoutLines(Substitute(
-        "pbc dump $0 --oneline", metadata_path), &stdout));
+        "pbc dump $0 $1 --oneline", metadata_path, encryption_args), &stdout));
     ASSERT_EQ(kNumCFileBlocks, stdout.size());
     ASSERT_STR_MATCHES(stdout[0],
                        "^0\tblock_id \\{ id: [0-9]+ \\} op_type: DELETE "
-                       "timestamp_us: [0-9]+ offset: 0 length: 153$");
+                       "timestamp_us: [0-9]+ offset: [0-9]+ length: 153$");
   }
 }
 
@@ -1942,16 +2030,18 @@ TEST_F(ToolTest, TestFsDumpCFile) {
   ASSERT_OK_FAST(writer.AppendEntries(generator.values(), kNumEntries));
   ASSERT_OK(writer.Finish());
 
+  string encryption_args = env_->IsEncryptionEnabled() ? GetEncryptionArgs() : "";
+
   {
     NO_FATALS(RunActionStdoutNone(Substitute(
-        "fs dump cfile --fs_wal_dir=$0 $1 --noprint_meta --noprint_rows",
-        kTestDir, block_id.ToString())));
+        "fs dump cfile --fs_wal_dir=$0 $1 $2 --noprint_meta --noprint_rows",
+        kTestDir, block_id.ToString(), encryption_args)));
   }
   vector<string> stdout;
   {
     NO_FATALS(RunActionStdoutLines(Substitute(
-        "fs dump cfile --fs_wal_dir=$0 $1 --noprint_rows",
-        kTestDir, block_id.ToString()), &stdout));
+        "fs dump cfile --fs_wal_dir=$0 $1 $2 --noprint_rows",
+        kTestDir, block_id.ToString(), encryption_args), &stdout));
     SCOPED_TRACE(stdout);
     ASSERT_GE(stdout.size(), 4);
     ASSERT_EQ(stdout[0], "Header:");
@@ -1959,15 +2049,15 @@ TEST_F(ToolTest, TestFsDumpCFile) {
   }
   {
     NO_FATALS(RunActionStdoutLines(Substitute(
-        "fs dump cfile --fs_wal_dir=$0 $1 --noprint_meta",
-        kTestDir, block_id.ToString()), &stdout));
+        "fs dump cfile --fs_wal_dir=$0 $1 $2 --noprint_meta",
+        kTestDir, block_id.ToString(), encryption_args), &stdout));
     SCOPED_TRACE(stdout);
     ASSERT_EQ(kNumEntries, stdout.size());
   }
   {
     NO_FATALS(RunActionStdoutLines(Substitute(
-        "fs dump cfile --fs_wal_dir=$0 $1",
-        kTestDir, block_id.ToString()), &stdout));
+        "fs dump cfile --fs_wal_dir=$0 $1 $2",
+        kTestDir, block_id.ToString(), encryption_args), &stdout));
     SCOPED_TRACE(stdout);
     ASSERT_GT(stdout.size(), kNumEntries);
     ASSERT_EQ(stdout[0], "Header:");
@@ -1990,8 +2080,9 @@ TEST_F(ToolTest, TestFsDumpBlock) {
   {
     string stdout;
     NO_FATALS(RunActionStdoutString(Substitute(
-        "fs dump block --fs_wal_dir=$0 $1",
-        kTestDir, block_id.ToString()), &stdout));
+        "fs dump block --fs_wal_dir=$0 $1 $2",
+        kTestDir, block_id.ToString(),
+        env_->IsEncryptionEnabled() ? GetEncryptionArgs() : ""), &stdout));
     ASSERT_EQ("hello world", stdout);
   }
 }
@@ -2037,10 +2128,11 @@ TEST_F(ToolTest, TestWalDump) {
   }
 
   string wal_path = fs.GetWalSegmentFileName(kTestTablet, 1);
+  string encryption_args = env_->IsEncryptionEnabled() ? GetEncryptionArgs() : "";
   string stdout;
-  for (const auto& args : { Substitute("wal dump $0", wal_path),
-                            Substitute("local_replica dump wals --fs_wal_dir=$0 $1",
-                                       kTestDir, kTestTablet)
+  for (const auto& args : { Substitute("wal dump $0 $1", wal_path, encryption_args),
+                            Substitute("local_replica dump wals --fs_wal_dir=$0 $1 $2",
+                                       kTestDir, kTestTablet, encryption_args)
                            }) {
     SCOPED_TRACE(args);
     for (const auto& print_entries : { "true", "1", "yes", "decoded" }) {
@@ -2113,6 +2205,224 @@ TEST_F(ToolTest, TestWalDump) {
   }
 }
 
+TEST_F(ToolTest, TestWalDumpWithAlterSchema) {
+  const string kTestDir = GetTestPath("test");
+  const string kTestTablet = "ffffffffffffffffffffffffffffffff";
+  Schema schema(GetSimpleTestSchema());
+  Schema schema_with_ids(SchemaBuilder(schema).Build());
+
+  FsManager fs(env_, FsManagerOpts(kTestDir));
+  ASSERT_OK(fs.CreateInitialFileSystemLayout());
+  ASSERT_OK(fs.Open());
+
+  const std::string kFirstMessage("this is a test insert");
+  const std::string kAddColumnName1("addcolumn1_addcolumn1");
+  const std::string kAddColumnName2("addcolumn2_addcolumn2");
+  const std::string kAddColumnName1Message("insert a record, after alter schema");
+  const std::string kAddColumnName2Message("upsert a record, after alter schema");
+  {
+    scoped_refptr<Log> log;
+    ASSERT_OK(Log::Open(LogOptions(),
+                        &fs,
+                        /*file_cache*/nullptr,
+                        kTestTablet,
+                        schema_with_ids,
+                        0, // schema_version
+                        /*metric_entity*/nullptr,
+                        &log));
+
+    std::vector<ReplicateRefPtr> replicates;
+    {
+      OpId opid = consensus::MakeOpId(1, 1);
+      ReplicateRefPtr replicate =
+          consensus::make_scoped_refptr_replicate(new ReplicateMsg());
+      replicate->get()->set_op_type(consensus::WRITE_OP);
+      replicate->get()->mutable_id()->CopyFrom(opid);
+      replicate->get()->set_timestamp(1);
+      WriteRequestPB* write = replicate->get()->mutable_write_request();
+      ASSERT_OK(SchemaToPB(schema, write->mutable_schema()));
+      AddTestRowToPB(RowOperationsPB::INSERT, schema,
+                     opid.index(), 0, kFirstMessage,
+                     write->mutable_row_operations());
+      write->set_tablet_id(kTestTablet);
+      replicates.emplace_back(replicate);
+    }
+    {
+      OpId opid = consensus::MakeOpId(1, 2);
+      ReplicateRefPtr replicate =
+          consensus::make_scoped_refptr_replicate(new ReplicateMsg());
+      replicate->get()->set_op_type(consensus::ALTER_SCHEMA_OP);
+      replicate->get()->mutable_id()->CopyFrom(opid);
+      replicate->get()->set_timestamp(2);
+      tserver::AlterSchemaRequestPB* alter_schema =
+          replicate->get()->mutable_alter_schema_request();
+      SchemaBuilder schema_builder = SchemaBuilder(schema);
+      ASSERT_OK(schema_builder.AddColumn(kAddColumnName1, STRING, true, nullptr, nullptr));
+      ASSERT_OK(schema_builder.AddColumn(kAddColumnName2, STRING, true, nullptr, nullptr));
+      schema = schema_builder.BuildWithoutIds();
+      schema_with_ids = SchemaBuilder(schema).Build();
+      ASSERT_OK(SchemaToPB(schema_with_ids, alter_schema->mutable_schema()));
+      alter_schema->set_tablet_id(kTestTablet);
+      alter_schema->set_schema_version(1);
+      replicates.emplace_back(replicate);
+    }
+    {
+      OpId opid = consensus::MakeOpId(1, 3);
+      ReplicateRefPtr replicate =
+          consensus::make_scoped_refptr_replicate(new ReplicateMsg());
+      replicate->get()->set_op_type(consensus::WRITE_OP);
+      replicate->get()->mutable_id()->CopyFrom(opid);
+      replicate->get()->set_timestamp(3);
+      WriteRequestPB* write = replicate->get()->mutable_write_request();
+      ASSERT_OK(SchemaToPB(schema, write->mutable_schema()));
+      AddTestRowToPBAppendColumns(RowOperationsPB::INSERT, schema,
+                                  opid.index(), 2, kFirstMessage,
+                                  {{kAddColumnName1, kAddColumnName1Message}},
+                                  write->mutable_row_operations());
+      write->set_tablet_id(kTestTablet);
+      replicates.emplace_back(replicate);
+    }
+    {
+      OpId opid = consensus::MakeOpId(1, 4);
+      ReplicateRefPtr replicate =
+          consensus::make_scoped_refptr_replicate(new ReplicateMsg());
+      replicate->get()->set_op_type(consensus::WRITE_OP);
+      replicate->get()->mutable_id()->CopyFrom(opid);
+      replicate->get()->set_timestamp(4);
+      WriteRequestPB* write = replicate->get()->mutable_write_request();
+      ASSERT_OK(SchemaToPB(schema, write->mutable_schema()));
+      AddTestRowToPBAppendColumns(RowOperationsPB::UPSERT, schema,
+                                  1, 1111, kFirstMessage,
+                                  {
+                                  {kAddColumnName1, kAddColumnName1Message},
+                                  {kAddColumnName2, kAddColumnName2Message},
+                                  },
+                                  write->mutable_row_operations());
+      write->set_tablet_id(kTestTablet);
+      replicates.emplace_back(replicate);
+    }
+
+    Synchronizer s;
+    ASSERT_OK(log->AsyncAppendReplicates(replicates, s.AsStatusCallback()));
+    ASSERT_OK(s.Wait());
+  }
+
+  string wal_path = fs.GetWalSegmentFileName(kTestTablet, 1);
+  string stdout;
+  for (const auto& args : { Substitute("wal dump $0", wal_path),
+                            Substitute("local_replica dump wals --fs_wal_dir=$0 $1",
+                                       kTestDir, kTestTablet)
+                           }) {
+    SCOPED_TRACE(args);
+    for (const auto& print_entries : { "true", "1", "yes", "decoded" }) {
+      SCOPED_TRACE(print_entries);
+      NO_FATALS(RunActionStdoutString(Substitute("$0 --print_entries=$1",
+                                                 args, print_entries), &stdout));
+      SCOPED_TRACE(stdout);
+      ASSERT_STR_MATCHES(stdout, "Header:");
+      ASSERT_STR_MATCHES(stdout, "1\\.1@1");
+      ASSERT_STR_MATCHES(stdout, "1\\.2@2");
+      ASSERT_STR_MATCHES(stdout, "1\\.3@3");
+      ASSERT_STR_MATCHES(stdout, "1\\.4@4");
+      ASSERT_STR_MATCHES(stdout, kFirstMessage);
+      ASSERT_STR_MATCHES(stdout, kAddColumnName1);
+      ASSERT_STR_MATCHES(stdout, "ALTER_SCHEMA_OP");
+      ASSERT_STR_MATCHES(stdout, kAddColumnName1Message);
+      ASSERT_STR_MATCHES(stdout, kAddColumnName2Message);
+      ASSERT_STR_NOT_MATCHES(stdout, "t<truncated>");
+      ASSERT_STR_NOT_MATCHES(stdout, "row_operations \\{");
+      ASSERT_STR_MATCHES(stdout, "Footer:");
+    }
+    for (const auto& print_entries : { "false", "0", "no" }) {
+      SCOPED_TRACE(print_entries);
+      NO_FATALS(RunActionStdoutString(Substitute("$0 --print_entries=$1",
+                                                 args, print_entries), &stdout));
+      SCOPED_TRACE(stdout);
+      ASSERT_STR_MATCHES(stdout, "Header:");
+      ASSERT_STR_NOT_MATCHES(stdout, "1\\.1@1");
+      ASSERT_STR_NOT_MATCHES(stdout, "1\\.2@2");
+      ASSERT_STR_NOT_MATCHES(stdout, "1\\.3@3");
+      ASSERT_STR_NOT_MATCHES(stdout, "1\\.4@4");
+      ASSERT_STR_NOT_MATCHES(stdout, kFirstMessage);
+      ASSERT_STR_NOT_MATCHES(stdout, kAddColumnName1);
+      ASSERT_STR_NOT_MATCHES(stdout, "ALTER_SCHEMA_OP");
+      ASSERT_STR_NOT_MATCHES(stdout, kAddColumnName1Message);
+      ASSERT_STR_NOT_MATCHES(stdout, kAddColumnName2Message);
+      ASSERT_STR_NOT_MATCHES(stdout, "t<truncated>");
+      ASSERT_STR_NOT_MATCHES(stdout, "row_operations \\{");
+      ASSERT_STR_MATCHES(stdout, "Footer:");
+    }
+    {
+      NO_FATALS(RunActionStdoutString(Substitute("$0 --print_entries=pb",
+                                                 args), &stdout));
+      SCOPED_TRACE(stdout);
+      ASSERT_STR_MATCHES(stdout, "Header:");
+      ASSERT_STR_NOT_MATCHES(stdout, "1\\.1@1");
+      ASSERT_STR_NOT_MATCHES(stdout, "1\\.2@2");
+      ASSERT_STR_NOT_MATCHES(stdout, "1\\.3@3");
+      ASSERT_STR_NOT_MATCHES(stdout, "1\\.4@4");
+      ASSERT_STR_MATCHES(stdout, kFirstMessage);
+      ASSERT_STR_MATCHES(stdout, kAddColumnName1);
+      ASSERT_STR_MATCHES(stdout, "ALTER_SCHEMA_OP");
+      ASSERT_STR_MATCHES(stdout, kAddColumnName1Message);
+      ASSERT_STR_MATCHES(stdout, kAddColumnName2Message);
+      ASSERT_STR_NOT_MATCHES(stdout, "t<truncated>");
+      ASSERT_STR_MATCHES(stdout, "row_operations \\{");
+      ASSERT_STR_MATCHES(stdout, "Footer:");
+    }
+    {
+      NO_FATALS(RunActionStdoutString(Substitute(
+          "$0 --print_entries=pb --truncate_data=1", args), &stdout));
+      SCOPED_TRACE(stdout);
+      ASSERT_STR_MATCHES(stdout, "Header:");
+      ASSERT_STR_NOT_MATCHES(stdout, "1\\.1@1");
+      ASSERT_STR_NOT_MATCHES(stdout, "1\\.2@2");
+      ASSERT_STR_NOT_MATCHES(stdout, "1\\.3@3");
+      ASSERT_STR_NOT_MATCHES(stdout, "1\\.4@4");
+      ASSERT_STR_NOT_MATCHES(stdout, kFirstMessage);
+      ASSERT_STR_NOT_MATCHES(stdout, kAddColumnName1);
+      ASSERT_STR_NOT_MATCHES(stdout, kAddColumnName1Message);
+      ASSERT_STR_NOT_MATCHES(stdout, kAddColumnName2Message);
+      ASSERT_STR_MATCHES(stdout, "t<truncated>");
+      ASSERT_STR_MATCHES(stdout, "row_operations \\{");
+      ASSERT_STR_MATCHES(stdout, "Footer:");
+    }
+    {
+      NO_FATALS(RunActionStdoutString(Substitute(
+          "$0 --print_entries=id", args), &stdout));
+      SCOPED_TRACE(stdout);
+      ASSERT_STR_MATCHES(stdout, "Header:");
+      ASSERT_STR_MATCHES(stdout, "1\\.1@1");
+      ASSERT_STR_MATCHES(stdout, "1\\.2@2");
+      ASSERT_STR_MATCHES(stdout, "1\\.3@3");
+      ASSERT_STR_MATCHES(stdout, "1\\.4@4");
+      ASSERT_STR_NOT_MATCHES(stdout, kFirstMessage);
+      ASSERT_STR_NOT_MATCHES(stdout, kAddColumnName1);
+      ASSERT_STR_NOT_MATCHES(stdout, kAddColumnName1Message);
+      ASSERT_STR_NOT_MATCHES(stdout, kAddColumnName2Message);
+      ASSERT_STR_NOT_MATCHES(stdout, "t<truncated>");
+      ASSERT_STR_NOT_MATCHES(stdout, "row_operations \\{");
+      ASSERT_STR_MATCHES(stdout, "Footer:");
+    }
+    {
+      NO_FATALS(RunActionStdoutString(Substitute(
+          "$0 --print_meta=false", args), &stdout));
+      SCOPED_TRACE(stdout);
+      ASSERT_STR_NOT_MATCHES(stdout, "Header:");
+      ASSERT_STR_MATCHES(stdout, "1\\.1@1");
+      ASSERT_STR_MATCHES(stdout, "1\\.2@2");
+      ASSERT_STR_MATCHES(stdout, "1\\.3@3");
+      ASSERT_STR_MATCHES(stdout, "1\\.4@4");
+      ASSERT_STR_MATCHES(stdout, kFirstMessage);
+      ASSERT_STR_MATCHES(stdout, kAddColumnName1);
+      ASSERT_STR_MATCHES(stdout, kAddColumnName1Message);
+      ASSERT_STR_MATCHES(stdout, kAddColumnName2Message);
+      ASSERT_STR_NOT_MATCHES(stdout, "row_operations \\{");
+      ASSERT_STR_NOT_MATCHES(stdout, "Footer:");
+    }
+  }
+}
+
 TEST_F(ToolTest, TestLocalReplicaDumpDataDirs) {
   constexpr const char* const kTestTablet = "ffffffffffffffffffffffffffffffff";
   constexpr const char* const kTestTableId = "test-table";
@@ -2147,9 +2457,12 @@ TEST_F(ToolTest, TestLocalReplicaDumpDataDirs) {
   string stdout;
   NO_FATALS(RunActionStdoutString(Substitute("local_replica dump data_dirs $0 "
                                              "--fs_wal_dir=$1 "
-                                             "--fs_data_dirs=$2",
+                                             "--fs_data_dirs=$2 $3",
                                              kTestTablet, opts.wal_root,
-                                             JoinStrings(opts.data_roots, ",")),
+                                             JoinStrings(opts.data_roots, ","),
+                                             env_->IsEncryptionEnabled()
+                                                 ? GetEncryptionArgs()
+                                                 : ""),
                                   &stdout));
   vector<string> expected;
   for (const auto& data_root : opts.data_roots) {
@@ -2185,14 +2498,17 @@ TEST_F(ToolTest, TestLocalReplicaDumpMeta) {
   string stdout;
   NO_FATALS(RunActionStdoutString(Substitute("local_replica dump meta $0 "
                                              "--fs_wal_dir=$1 "
-                                             "--fs_data_dirs=$2",
+                                             "--fs_data_dirs=$2 "
+                                             "$3",
                                              kTestTablet, kTestDir,
-                                             kTestDir), &stdout));
+                                             kTestDir,
+                                             env_->IsEncryptionEnabled()
+                                                ? GetEncryptionArgs() : ""), &stdout));
 
   // Verify the contents of the metadata output
   SCOPED_TRACE(stdout);
   string debug_str = meta->partition_schema()
-      .PartitionDebugString(meta->partition(), meta->schema());
+      .PartitionDebugString(meta->partition(), *meta->schema());
   StripWhiteSpace(&debug_str);
   ASSERT_STR_CONTAINS(stdout, debug_str);
   debug_str = Substitute("Table name: $0 Table id: $1",
@@ -2200,7 +2516,7 @@ TEST_F(ToolTest, TestLocalReplicaDumpMeta) {
   ASSERT_STR_CONTAINS(stdout, debug_str);
   debug_str = Substitute("Schema (version=$0):", meta->schema_version());
   ASSERT_STR_CONTAINS(stdout, debug_str);
-  debug_str = meta->schema().ToString();
+  debug_str = meta->schema()->ToString();
   StripWhiteSpace(&debug_str);
   ASSERT_STR_CONTAINS(stdout, debug_str);
 
@@ -2263,11 +2579,12 @@ TEST_F(ToolTest, TestLocalReplicaOps) {
   harness.tablet()->Shutdown();
   string fs_paths = "--fs_wal_dir=" + kTestDir + " "
       "--fs_data_dirs=" + kTestDir;
+  string encryption_args = env_->IsEncryptionEnabled() ? GetEncryptionArgs() : "";
   {
     string stdout;
     NO_FATALS(RunActionStdoutString(
-        Substitute("local_replica dump block_ids $0 $1",
-                   kTestTablet, fs_paths), &stdout));
+        Substitute("local_replica dump block_ids $0 $1 $2",
+                   kTestTablet, fs_paths, encryption_args), &stdout));
 
     SCOPED_TRACE(stdout);
     string tablet_out = "Listing all data blocks in tablet " + kTestTablet;
@@ -2281,8 +2598,8 @@ TEST_F(ToolTest, TestLocalReplicaOps) {
   {
     string stdout;
     NO_FATALS(RunActionStdoutString(
-        Substitute("local_replica dump rowset $0 $1",
-                   kTestTablet, fs_paths), &stdout));
+        Substitute("local_replica dump rowset $0 $1 $2",
+                   kTestTablet, fs_paths, encryption_args), &stdout));
 
     SCOPED_TRACE(stdout);
     ASSERT_STR_CONTAINS(stdout, "Dumping rowset 0");
@@ -2305,8 +2622,8 @@ TEST_F(ToolTest, TestLocalReplicaOps) {
     // This is expected to fail with Invalid argument for kRowId.
     string stderr;
     Status s = RunTool(
-        Substitute("local_replica dump rowset $0 $1 --rowset_index=$2",
-                   kTestTablet, fs_paths, kRowId),
+        Substitute("local_replica dump rowset $0 $1 --rowset_index=$2 $3",
+                   kTestTablet, fs_paths, kRowId, encryption_args),
                    &stdout, &stderr, nullptr, nullptr);
     ASSERT_TRUE(s.IsRuntimeError());
     SCOPED_TRACE(stderr);
@@ -2316,8 +2633,8 @@ TEST_F(ToolTest, TestLocalReplicaOps) {
 
     NO_FATALS(RunActionStdoutString(
         Substitute("local_replica dump rowset --nodump_all_columns "
-                   "--nodump_metadata --nrows=15 $0 $1",
-                   kTestTablet, fs_paths), &stdout));
+                   "--nodump_metadata --nrows=15 $0 $1 $2",
+                   kTestTablet, fs_paths, encryption_args), &stdout));
 
     SCOPED_TRACE(stdout);
     ASSERT_STR_CONTAINS(stdout, "Dumping rowset 0");
@@ -2338,12 +2655,12 @@ TEST_F(ToolTest, TestLocalReplicaOps) {
     string stdout;
     string debug_str;
     NO_FATALS(RunActionStdoutString(
-        Substitute("local_replica dump meta $0 $1",
-                   kTestTablet, fs_paths), &stdout));
+        Substitute("local_replica dump meta $0 $1 $2",
+                   kTestTablet, fs_paths, encryption_args), &stdout));
 
     SCOPED_TRACE(stdout);
     debug_str = meta->partition_schema()
-        .PartitionDebugString(meta->partition(), meta->schema());
+        .PartitionDebugString(meta->partition(), *meta->schema());
     StripWhiteSpace(&debug_str);
     ASSERT_STR_CONTAINS(stdout, debug_str);
     debug_str = Substitute("Table name: $0 Table id: $1",
@@ -2352,7 +2669,7 @@ TEST_F(ToolTest, TestLocalReplicaOps) {
     debug_str = Substitute("Schema (version=$0):", meta->schema_version());
     StripWhiteSpace(&debug_str);
     ASSERT_STR_CONTAINS(stdout, debug_str);
-    debug_str = meta->schema().ToString();
+    debug_str = meta->schema()->ToString();
     StripWhiteSpace(&debug_str);
     ASSERT_STR_CONTAINS(stdout, debug_str);
 
@@ -2366,8 +2683,8 @@ TEST_F(ToolTest, TestLocalReplicaOps) {
   {
     string stdout;
     NO_FATALS(RunActionStdoutString(
-        Substitute("local_replica data_size $0 $1",
-                   kTestTablet, fs_paths), &stdout));
+        Substitute("local_replica data_size $0 $1 $2",
+                   kTestTablet, fs_paths, encryption_args), &stdout));
     SCOPED_TRACE(stdout);
 
     string expected = R"(
@@ -2433,8 +2750,8 @@ TEST_F(ToolTest, TestLocalReplicaOps) {
   }
   {
     string stdout;
-    NO_FATALS(RunActionStdoutString(Substitute("local_replica list $0",
-                                               fs_paths), &stdout));
+    NO_FATALS(RunActionStdoutString(Substitute("local_replica list $0 $1",
+                                               fs_paths, encryption_args), &stdout));
 
     SCOPED_TRACE(stdout);
     ASSERT_STR_MATCHES(stdout, kTestTablet);
@@ -2444,8 +2761,8 @@ TEST_F(ToolTest, TestLocalReplicaOps) {
   {
     string stdout;
     NO_FATALS(RunActionStdoutString(
-          Substitute("fs list $0 --columns=table,tablet-id --format=csv",
-                     fs_paths),
+          Substitute("fs list $0 $1 --columns=table,tablet-id --format=csv",
+                     fs_paths, encryption_args),
           &stdout));
 
     SCOPED_TRACE(stdout);
@@ -2456,8 +2773,8 @@ TEST_F(ToolTest, TestLocalReplicaOps) {
   {
     vector<string> stdout;
     NO_FATALS(RunActionStdoutLines(
-          Substitute("fs list $0 --columns=table,tablet-id,rowset-id --format=csv",
-                     fs_paths),
+          Substitute("fs list $0 $1 --columns=table,tablet-id,rowset-id --format=csv",
+                     fs_paths, encryption_args),
           &stdout));
 
     SCOPED_TRACE(stdout);
@@ -2472,10 +2789,10 @@ TEST_F(ToolTest, TestLocalReplicaOps) {
   {
     vector<string> stdout;
     NO_FATALS(RunActionStdoutLines(
-          Substitute("fs list $0 "
+          Substitute("fs list $0 $1 "
                      "--columns=table,tablet-id,rowset-id,block-kind,column "
                      "--format=csv",
-                     fs_paths),
+                     fs_paths, encryption_args),
           &stdout));
 
     SCOPED_TRACE(stdout);
@@ -2498,11 +2815,11 @@ TEST_F(ToolTest, TestLocalReplicaOps) {
   {
     vector<string> stdout;
     NO_FATALS(RunActionStdoutLines(
-          Substitute("fs list $0 "
+          Substitute("fs list $0 $1 "
                      "--columns=table,tablet-id,rowset-id,block-kind,"
                                "column,cfile-encoding,cfile-num-values "
                      "--format=csv",
-                     fs_paths),
+                     fs_paths, encryption_args),
           &stdout));
 
     SCOPED_TRACE(stdout);
@@ -3242,9 +3559,10 @@ TEST_F(ToolTest, TestPerfTabletScan) {
   cluster_->Shutdown();
   for (const string& tid : tablet_ids) {
     const string args =
-        Substitute("perf tablet_scan $0 --fs_wal_dir=$1 --fs_data_dirs=$2 --num_iters=2",
+        Substitute("perf tablet_scan $0 --fs_wal_dir=$1 --fs_data_dirs=$2 --num_iters=2 $3",
                    tid, cluster_->tablet_server(0)->wal_dir(),
-                   JoinStrings(cluster_->tablet_server(0)->data_dirs(), ","));
+                   JoinStrings(cluster_->tablet_server(0)->data_dirs(), ","),
+                   env_->IsEncryptionEnabled() ? GetEncryptionArgs() : "");
     NO_FATALS(RunActionStdoutNone(args));
     NO_FATALS(RunActionStdoutNone(args + " --ordered_scan"));
   }
@@ -3300,16 +3618,18 @@ TEST_F(ToolTest, TestRemoteReplicaCopy) {
   string stderr;
   const string& src_ts_addr = cluster_->tablet_server(kSrcTsIndex)->bound_rpc_addr().ToString();
   const string& dst_ts_addr = cluster_->tablet_server(kDstTsIndex)->bound_rpc_addr().ToString();
+  string encryption_args = env_->IsEncryptionEnabled() ? GetEncryptionArgs() : "";
   Status s = RunTool(
-      Substitute("remote_replica copy $0 $1 $2",
-                 healthy_tablet_id, src_ts_addr, dst_ts_addr),
+      Substitute("remote_replica copy $0 $1 $2 $3",
+                 healthy_tablet_id, src_ts_addr, dst_ts_addr, encryption_args),
                  nullptr, &stderr, nullptr, nullptr);
   ASSERT_TRUE(s.IsRuntimeError());
   SCOPED_TRACE(stderr);
   ASSERT_STR_CONTAINS(stderr, "Rejecting tablet copy request");
 
-  NO_FATALS(RunActionStdoutNone(Substitute("remote_replica copy $0 $1 $2 --force_copy",
-                                           healthy_tablet_id, src_ts_addr, dst_ts_addr)));
+  NO_FATALS(RunActionStdoutNone(Substitute("remote_replica copy $0 $1 $2 $3 --force_copy",
+                                           healthy_tablet_id, src_ts_addr, dst_ts_addr,
+                                           encryption_args)));
   ASSERT_OK(WaitUntilTabletInState(dst_ts, healthy_tablet_id,
                                    tablet::RUNNING, kTimeout));
 
@@ -3330,9 +3650,10 @@ TEST_F(ToolTest, TestRemoteReplicaCopy) {
   cluster_->tablet_server(kDstTsIndex)->Shutdown();
   const string& deleted_tablet_id = tablets[1].tablet_status().tablet_id();
   NO_FATALS(RunActionStdoutNone(Substitute(
-      "local_replica delete $0 --fs_wal_dir=$1 --fs_data_dirs=$2 --clean_unsafe",
+      "local_replica delete $0 --fs_wal_dir=$1 --fs_data_dirs=$2 --clean_unsafe $3",
       deleted_tablet_id, cluster_->tablet_server(kDstTsIndex)->wal_dir(),
-      JoinStrings(cluster_->tablet_server(kDstTsIndex)->data_dirs(), ","))));
+      JoinStrings(cluster_->tablet_server(kDstTsIndex)->data_dirs(), ","),
+      encryption_args)));
 
   // At this point, we expect only 2 tablets to show up on destination when
   // we restart the destination tserver. deleted_tablet_id should not be found on
@@ -3353,13 +3674,15 @@ TEST_F(ToolTest, TestRemoteReplicaCopy) {
                                                  { TabletDataState::TABLET_DATA_TOMBSTONED },
                                                  kTimeout));
   // Copy tombstoned_tablet_id from source to destination.
-  NO_FATALS(RunActionStdoutNone(Substitute("remote_replica copy $0 $1 $2 --force_copy",
-                                           tombstoned_tablet_id, src_ts_addr, dst_ts_addr)));
+  NO_FATALS(RunActionStdoutNone(Substitute("remote_replica copy $0 $1 $2 $3 --force_copy",
+                                           tombstoned_tablet_id, src_ts_addr, dst_ts_addr,
+                                           encryption_args)));
   ASSERT_OK(WaitUntilTabletInState(dst_ts, tombstoned_tablet_id,
                                    tablet::RUNNING, kTimeout));
   // Copy deleted_tablet_id from source to destination.
-  NO_FATALS(RunActionStdoutNone(Substitute("remote_replica copy $0 $1 $2",
-                                           deleted_tablet_id, src_ts_addr, dst_ts_addr)));
+  NO_FATALS(RunActionStdoutNone(Substitute("remote_replica copy $0 $1 $2 $3",
+                                           deleted_tablet_id, src_ts_addr, dst_ts_addr,
+                                           encryption_args)));
   ASSERT_OK(WaitUntilTabletInState(dst_ts, deleted_tablet_id,
                                    tablet::RUNNING, kTimeout));
 }
@@ -3509,12 +3832,13 @@ TEST_F(ToolTest, TestLocalReplicaDelete) {
     ASSERT_OK(tablet->Flush());
     tablet_id = tablet_replicas[0]->tablet_id();
   }
+  string encryption_args = env_->IsEncryptionEnabled() ? GetEncryptionArgs() : "";
   const string& tserver_dir = ts->options()->fs_opts.wal_root;
   // Using the delete tool with tablet server running fails.
   string stderr;
   Status s = RunTool(
-      Substitute("local_replica delete $0 --fs_wal_dir=$1 --fs_data_dirs=$1 "
-                 "--clean_unsafe", tablet_id, tserver_dir),
+      Substitute("local_replica delete $0 --fs_wal_dir=$1 --fs_data_dirs=$1 $2 "
+                 "--clean_unsafe", tablet_id, tserver_dir, encryption_args),
                  nullptr, &stderr, nullptr, nullptr);
   ASSERT_TRUE(s.IsRuntimeError());
   SCOPED_TRACE(stderr);
@@ -3526,9 +3850,9 @@ TEST_F(ToolTest, TestLocalReplicaDelete) {
   const string& data_dir = JoinPathSegments(tserver_dir, "data");
   uint64_t size_before_delete;
   ASSERT_OK(env_->GetFileSizeOnDiskRecursively(data_dir, &size_before_delete));
-  NO_FATALS(RunActionStdoutNone(Substitute("local_replica delete $0 --fs_wal_dir=$1 "
+  NO_FATALS(RunActionStdoutNone(Substitute("local_replica delete $0 --fs_wal_dir=$1 $2 "
                                            "--fs_data_dirs=$1 --clean_unsafe",
-                                           tablet_id, tserver_dir)));
+                                           tablet_id, tserver_dir, encryption_args)));
   // Verify metadata and WAL segments for the tablet_id are gone.
   const string& wal_dir = JoinPathSegments(tserver_dir,
                                            Substitute("wals/$0", tablet_id));
@@ -3539,8 +3863,8 @@ TEST_F(ToolTest, TestLocalReplicaDelete) {
 
   // Try to remove the same tablet replica again.
   s = RunTool(Substitute(
-      "local_replica delete $0 --clean_unsafe --fs_wal_dir=$1 --fs_data_dirs=$1",
-      tablet_id, tserver_dir),
+      "local_replica delete $0 --clean_unsafe --fs_wal_dir=$1 --fs_data_dirs=$1 $2",
+      tablet_id, tserver_dir, encryption_args),
       nullptr, &stderr, nullptr, nullptr);
   ASSERT_TRUE(s.IsRuntimeError());
   ASSERT_STR_CONTAINS(stderr, "Not found: Could not load tablet metadata");
@@ -3551,8 +3875,8 @@ TEST_F(ToolTest, TestLocalReplicaDelete) {
   // error ignored.
   ASSERT_OK(RunActionStderrString(
       Substitute("local_replica delete $0 --clean_unsafe --fs_wal_dir=$1 "
-                 "--fs_data_dirs=$1 --ignore_nonexistent",
-                 tablet_id, tserver_dir),
+                 "--fs_data_dirs=$1 --ignore_nonexistent $2",
+                 tablet_id, tserver_dir, encryption_args),
       &stderr));
   ASSERT_STR_CONTAINS(stderr, Substitute("ignoring error for tablet replica $0 "
                                          "because of the --ignore_nonexistent flag",
@@ -3609,7 +3933,8 @@ TEST_F(ToolTest, TestLocalReplicaDeleteMultiple) {
   const string tablet_ids_csv_str = JoinStrings(tablet_ids, ",");
   NO_FATALS(RunActionStdoutNone(Substitute(
       "local_replica delete --fs_wal_dir=$0 --fs_data_dirs=$0 "
-      "--clean_unsafe $1", tserver_dir, tablet_ids_csv_str)));
+      "--clean_unsafe $1 $2", tserver_dir, tablet_ids_csv_str,
+      env_->IsEncryptionEnabled() ? GetEncryptionArgs() : "")));
 
   ASSERT_OK(ts->Start());
   ASSERT_OK(ts->WaitStarted());
@@ -3663,8 +3988,11 @@ TEST_F(ToolTest, TestLocalReplicaTombstoneDelete) {
   uint64_t size_before_delete;
   ASSERT_OK(env_->GetFileSizeOnDiskRecursively(data_dir, &size_before_delete));
   NO_FATALS(RunActionStdoutNone(Substitute("local_replica delete $0 --fs_wal_dir=$1 "
-                                           "--fs_data_dirs=$1",
-                                           tablet_id, tserver_dir)));
+                                           "--fs_data_dirs=$1 $2",
+                                           tablet_id, tserver_dir,
+                                           env_->IsEncryptionEnabled()
+                                             ? GetEncryptionArgs()
+                                             : "")));
   // Verify WAL segments for the tablet_id are gone and
   // the data_dir size on tserver is reduced.
   const string& wal_dir = JoinPathSegments(tserver_dir,
@@ -3713,12 +4041,15 @@ TEST_F(ToolTest, TestLocalReplicaCMetaOps) {
   for (int i = 0; i < kNumTabletServers; ++i) {
     ts_uuids.emplace_back(mini_cluster_->mini_tablet_server(i)->uuid());
   }
+  string encryption_args = env_->IsEncryptionEnabled() ? GetEncryptionArgs() : "";
   const string& flags =
-      Substitute("-fs-wal-dir $0",
-                 mini_cluster_->mini_tablet_server(0)->options()->fs_opts.wal_root);
+      Substitute("-fs-wal-dir $0 $1",
+                 mini_cluster_->mini_tablet_server(0)->options()->fs_opts.wal_root,
+                 encryption_args);
   vector<string> tablet_ids;
   {
-    NO_FATALS(RunActionStdoutLines(Substitute("local_replica list $0", flags), &tablet_ids));
+    NO_FATALS(RunActionStdoutLines(Substitute("local_replica list $0 $1", flags, encryption_args),
+                                   &tablet_ids));
     ASSERT_EQ(kNumTablets, tablet_ids.size());
   }
   vector<string> cmeta_paths;
@@ -3735,8 +4066,9 @@ TEST_F(ToolTest, TestLocalReplicaCMetaOps) {
   // We have kNumTablets replicas, so we expect kNumTablets lines, with our 3 servers' UUIDs.
   {
     vector<string> lines;
-    NO_FATALS(RunActionStdoutLines(Substitute("local_replica cmeta print_replica_uuids $0 $1",
-                                              flags, JoinStrings(tablet_ids, ",")), &lines));
+    NO_FATALS(RunActionStdoutLines(Substitute("local_replica cmeta print_replica_uuids $0 $1 $2",
+                                              flags, JoinStrings(tablet_ids, ","), encryption_args),
+                                   &lines));
     ASSERT_EQ(kNumTablets, lines.size());
     for (int i = 0; i < lines.size(); ++i) {
       ASSERT_STR_MATCHES(lines[i],
@@ -3750,11 +4082,11 @@ TEST_F(ToolTest, TestLocalReplicaCMetaOps) {
 
   // Test using set-term to bump the term to 123.
   for (int i = 0; i < tablet_ids.size(); ++i) {
-    NO_FATALS(RunActionStdoutNone(Substitute("local_replica cmeta set-term $0 $1 123",
-                                             flags, tablet_ids[i])));
+    NO_FATALS(RunActionStdoutNone(Substitute("local_replica cmeta set-term $0 $1 $2 123",
+                                             flags, tablet_ids[i], encryption_args)));
 
     string stdout;
-    NO_FATALS(RunActionStdoutString(Substitute("pbc dump $0", cmeta_paths[i]),
+    NO_FATALS(RunActionStdoutString(Substitute("pbc dump $0 $1", cmeta_paths[i], encryption_args),
                                     &stdout));
     ASSERT_STR_CONTAINS(stdout, "current_term: 123");
   }
@@ -3762,8 +4094,8 @@ TEST_F(ToolTest, TestLocalReplicaCMetaOps) {
   // Test that set-term refuses to decrease the term.
   for (const auto& tablet_id : tablet_ids) {
     string stdout, stderr;
-    Status s = RunTool(Substitute("local_replica cmeta set-term $0 $1 10",
-                                  flags, tablet_id),
+    Status s = RunTool(Substitute("local_replica cmeta set-term $0 $1 $2 10",
+                                  flags, tablet_id, encryption_args),
                        &stdout, &stderr,
                        /* stdout_lines = */ nullptr,
                        /* stderr_lines = */ nullptr);
@@ -3776,19 +4108,21 @@ TEST_F(ToolTest, TestLocalReplicaCMetaOps) {
   // Test using rewrite_raft_config to set all tablets' raft config with only 1 member.
   {
     NO_FATALS(RunActionStdoutNone(
-        Substitute("local_replica cmeta rewrite_raft_config $0 $1 $2:$3",
+        Substitute("local_replica cmeta rewrite_raft_config $0 $1 $2:$3 $4",
                    flags,
                    JoinStrings(tablet_ids, ","),
                    ts_uuids[0],
-                   ts_host_port)));
+                   ts_host_port,
+                   encryption_args)));
   }
 
   // We have kNumTablets replicas, so we expect kNumTablets lines, with our the
   // first tservers' UUIDs.
   {
     vector<string> lines;
-    NO_FATALS(RunActionStdoutLines(Substitute("local_replica cmeta print_replica_uuids $0 $1",
-                                              flags, JoinStrings(tablet_ids, ",")), &lines));
+    NO_FATALS(RunActionStdoutLines(Substitute("local_replica cmeta print_replica_uuids $0 $1 $2",
+                                              flags, JoinStrings(tablet_ids, ","), encryption_args),
+                                   &lines));
     ASSERT_EQ(kNumTablets, lines.size());
     for (int i = 0; i < lines.size(); ++i) {
       ASSERT_STR_MATCHES(lines[i], Substitute("tablet: $0, peers: $1",
@@ -6566,7 +6900,9 @@ TEST_P(ControlShellToolTest, TestControlShell) {
 }
 
 static void CreateTableWithFlushedData(const string& table_name,
-                                       InternalMiniCluster* cluster) {
+                                       InternalMiniCluster* cluster,
+                                       int num_tablets = 1,
+                                       int num_replicas = 1) {
   // Use a schema with a high number of columns to encourage the creation of
   // many data blocks.
   KuduSchemaBuilder schema_builder;
@@ -6586,10 +6922,11 @@ static void CreateTableWithFlushedData(const string& table_name,
   TestWorkload workload(cluster);
   workload.set_schema(schema);
   workload.set_table_name(table_name);
-  workload.set_num_replicas(1);
+  workload.set_num_tablets(num_tablets);
+  workload.set_num_replicas(num_replicas);
   workload.Setup();
   workload.Start();
-  ASSERT_EVENTUALLY([&](){
+  ASSERT_EVENTUALLY([&]() {
     ASSERT_GE(workload.rows_inserted(), 10000);
   });
   workload.StopAndJoin();
@@ -6725,8 +7062,9 @@ TEST_F(ToolTest, TestFsRemoveDataDirWithTombstone) {
   mts->Shutdown();
   // KUDU-2680: tombstones shouldn't prevent us from removing a directory.
   NO_FATALS(RunActionStdoutNone(Substitute(
-      "fs update_dirs --fs_wal_dir=$0 --fs_data_dirs=$1",
-      mts->options()->fs_opts.wal_root, data_root)));
+      "fs update_dirs --fs_wal_dir=$0 --fs_data_dirs=$1 $2",
+      mts->options()->fs_opts.wal_root, data_root,
+      env_->IsEncryptionEnabled() ? GetEncryptionArgs() : "")));
 
   ASSERT_OK(mts->Start());
   ASSERT_OK(mts->WaitStarted());
@@ -6762,9 +7100,10 @@ TEST_F(ToolTest, TestFsAddRemoveDataDirEndToEnd) {
   string to_add = JoinPathSegments(DirName(data_roots.back()), "data-new");
   data_roots.emplace_back(to_add);
   mts->Shutdown();
+  string encryption_args = env_->IsEncryptionEnabled() ? GetEncryptionArgs() : "";
   NO_FATALS(RunActionStdoutNone(Substitute(
-      "fs update_dirs --fs_wal_dir=$0 --fs_data_dirs=$1",
-      wal_root, JoinStrings(data_roots, ","))));
+      "fs update_dirs --fs_wal_dir=$0 --fs_data_dirs=$1 $2",
+      wal_root, JoinStrings(data_roots, ","), encryption_args)));
 
   // Reconfigure the tserver to use the newly added data directory and restart it.
   //
@@ -6788,8 +7127,8 @@ TEST_F(ToolTest, TestFsAddRemoveDataDirEndToEnd) {
   data_roots.pop_back();
   string stderr;
   ASSERT_TRUE(RunActionStderrString(Substitute(
-      "fs update_dirs --fs_wal_dir=$0 --fs_data_dirs=$1",
-      wal_root, JoinStrings(data_roots, ",")), &stderr).IsRuntimeError());
+      "fs update_dirs --fs_wal_dir=$0 --fs_data_dirs=$1 $2",
+      wal_root, JoinStrings(data_roots, ","), encryption_args), &stderr).IsRuntimeError());
   ASSERT_STR_CONTAINS(
       stderr, "Not found: cannot update data directories: at least one "
       "tablet is configured to use removed data directory. Retry with --force "
@@ -6803,8 +7142,8 @@ TEST_F(ToolTest, TestFsAddRemoveDataDirEndToEnd) {
   // If we force the removal it'll succeed, but the tserver will fail to
   // bootstrap some tablets when restarted.
   NO_FATALS(RunActionStdoutNone(Substitute(
-      "fs update_dirs --fs_wal_dir=$0 --fs_data_dirs=$1 --force",
-      wal_root, JoinStrings(data_roots, ","))));
+      "fs update_dirs --fs_wal_dir=$0 --fs_data_dirs=$1 $2 --force",
+      wal_root, JoinStrings(data_roots, ","), encryption_args)));
   mts->options()->fs_opts.data_roots = data_roots;
   ASSERT_OK(mts->Start());
   Status s = mts->WaitStarted();
@@ -6833,8 +7172,8 @@ TEST_F(ToolTest, TestFsAddRemoveDataDirEndToEnd) {
   mts->Shutdown();
   data_roots.emplace_back(to_add);
   NO_FATALS(RunActionStdoutNone(Substitute(
-      "fs update_dirs --fs_wal_dir=$0 --fs_data_dirs=$1",
-      wal_root, JoinStrings(data_roots, ","))));
+      "fs update_dirs --fs_wal_dir=$0 --fs_data_dirs=$1 $2",
+      wal_root, JoinStrings(data_roots, ","), encryption_args)));
   mts->options()->fs_opts.data_roots = data_roots;
   ASSERT_OK(mts->Start());
   ASSERT_OK(mts->WaitStarted());
@@ -6843,8 +7182,8 @@ TEST_F(ToolTest, TestFsAddRemoveDataDirEndToEnd) {
   // Remove it again so that the second table's tablets fail once again.
   data_roots.pop_back();
   NO_FATALS(RunActionStdoutNone(Substitute(
-      "fs update_dirs --fs_wal_dir=$0 --fs_data_dirs=$1 --force",
-      wal_root, JoinStrings(data_roots, ","))));
+      "fs update_dirs --fs_wal_dir=$0 --fs_data_dirs=$1 $2 --force",
+      wal_root, JoinStrings(data_roots, ","), encryption_args)));
   mts->options()->fs_opts.data_roots = data_roots;
   ASSERT_OK(mts->Start());
   s = mts->WaitStarted();
@@ -6869,8 +7208,8 @@ TEST_F(ToolTest, TestFsAddRemoveDataDirEndToEnd) {
   mts->Shutdown();
   data_roots.emplace_back(JoinPathSegments(DirName(data_roots.back()), "data-new2"));
   NO_FATALS(RunActionStdoutNone(Substitute(
-      "fs update_dirs --fs_wal_dir=$0 --fs_data_dirs=$1",
-      wal_root, JoinStrings(data_roots, ","))));
+      "fs update_dirs --fs_wal_dir=$0 --fs_data_dirs=$1 $2",
+      wal_root, JoinStrings(data_roots, ","), encryption_args)));
   mts->options()->fs_opts.data_roots = data_roots;
   ASSERT_OK(mts->Start());
   ASSERT_OK(mts->WaitStarted());
@@ -6881,8 +7220,8 @@ TEST_F(ToolTest, TestFsAddRemoveDataDirEndToEnd) {
   mts->Shutdown();
   data_roots.pop_back();
   NO_FATALS(RunActionStdoutNone(Substitute(
-      "fs update_dirs --fs_wal_dir=$0 --fs_data_dirs=$1",
-      wal_root, JoinStrings(data_roots, ","))));
+      "fs update_dirs --fs_wal_dir=$0 --fs_data_dirs=$1 $2",
+      wal_root, JoinStrings(data_roots, ","), encryption_args)));
   mts->options()->fs_opts.data_roots = data_roots;
   ASSERT_OK(mts->Start());
   ASSERT_OK(mts->WaitStarted());
@@ -7446,6 +7785,314 @@ TEST_F(ToolTest, TestNonDefaultPrincipal) {
                          "ksck",
                          "--sasl_protocol_name=oryx",
                          HostPort::ToCommaSeparatedString(cluster_->master_rpc_addrs())}));
+}
+
+class UnregisterTServerTest : public ToolTest, public ::testing::WithParamInterface<bool> {
+ public:
+  void StartCluster() {
+    // Test on a multi-master cluster.
+    InternalMiniClusterOptions opts;
+    opts.num_masters = 3;
+    StartMiniCluster(std::move(opts));
+  }
+};
+
+INSTANTIATE_TEST_SUITE_P(, UnregisterTServerTest, ::testing::Bool());
+
+TEST_P(UnregisterTServerTest, TestUnregisterTServer) {
+  bool remove_tserver_state = GetParam();
+
+  // Set a short timeout that masters consider a tserver dead.
+  FLAGS_tserver_unresponsive_timeout_ms = 3000;
+  NO_FATALS(StartCluster());
+  const string master_addrs_str = GetMasterAddrsStr();
+  MiniTabletServer* ts = mini_cluster_->mini_tablet_server(0);
+  const string ts_uuid = ts->uuid();
+  const string ts_hostport = ts->bound_rpc_addr().ToString();
+
+  // Enter maintenance mode on the tserver and shut it down.
+  ASSERT_OK(RunKuduTool({"tserver", "state", "enter_maintenance", master_addrs_str, ts_uuid}));
+  ts->Shutdown();
+
+  {
+    string out;
+    string err;
+    // Getting an error when running ksck and the output contains the dead tserver.
+    Status s =
+        RunActionStdoutStderrString(Substitute("cluster ksck $0", master_addrs_str), &out, &err);
+    ASSERT_TRUE(s.IsRuntimeError());
+    ASSERT_STR_CONTAINS(out, Substitute("$0 | $1 | UNAVAILABLE", ts_uuid, ts_hostport));
+  }
+  // Wait the tserver become dead.
+  ASSERT_EVENTUALLY(
+      [&] { ASSERT_EQ(0, mini_cluster_->mini_master(0)->master()->ts_manager()->GetLiveCount()); });
+
+  // Unregister the tserver.
+  ASSERT_OK(RunKuduTool({"tserver",
+                         "unregister",
+                         master_addrs_str,
+                         ts_uuid,
+                         Substitute("-remove_tserver_state=$0", remove_tserver_state)}));
+  {
+    // Run ksck and get no error.
+    string out;
+    NO_FATALS(RunActionStdoutString(Substitute("cluster ksck $0", master_addrs_str), &out));
+    if (remove_tserver_state) {
+      // Both the persisted state and registration of the tserver was removed.
+      ASSERT_STR_NOT_CONTAINS(out, Substitute(" $0 | MAINTENANCE_MODE", ts_uuid));
+      ASSERT_STR_NOT_CONTAINS(out, ts_uuid);
+    } else {
+      // Only the registration of the tserver was removed.
+      ASSERT_STR_CONTAINS(out, Substitute(" $0 | MAINTENANCE_MODE", ts_uuid));
+      ASSERT_STR_NOT_CONTAINS(out, Substitute("$0 | $1 | UNAVAILABLE", ts_uuid, ts_hostport));
+    }
+  }
+
+  // Restart the tserver and re-register it on masters.
+  ts->Start();
+  {
+    string out;
+    ASSERT_EVENTUALLY([&]() {
+      NO_FATALS(RunActionStdoutString(Substitute("cluster ksck $0", master_addrs_str), &out));
+    });
+    if (remove_tserver_state) {
+      // The tserver came back as a brand new tserver.
+      ASSERT_STR_NOT_CONTAINS(out, Substitute(" $0 | MAINTENANCE_MODE", ts_uuid));
+      ASSERT_STR_CONTAINS(out, ts_uuid);
+    } else {
+      // The tserver got its original maintenance state.
+      ASSERT_STR_CONTAINS(out, Substitute(" $0 | MAINTENANCE_MODE", ts_uuid));
+      ASSERT_STR_CONTAINS(out, ts_uuid);
+    }
+  }
+}
+
+TEST_F(UnregisterTServerTest, TestUnregisterTServerNotPresumedDead) {
+  // Reduce the TS<->Master heartbeat interval to speed up testing.
+  FLAGS_heartbeat_interval_ms = 100;
+  NO_FATALS(StartCluster());
+  const string master_addrs_str = GetMasterAddrsStr();
+  MiniTabletServer* ts = mini_cluster_->mini_tablet_server(0);
+  const string ts_uuid = ts->uuid();
+  const string ts_hostport = ts->bound_rpc_addr().ToString();
+
+  // Shut down the tserver.
+  ts->Shutdown();
+  // Get an error because the tserver is not presumed dead by masters.
+  {
+    string out;
+    string err;
+    Status s = RunActionStdoutStderrString(
+        Substitute("tserver unregister $0 $1", master_addrs_str, ts_uuid), &out, &err);
+    ASSERT_TRUE(s.IsRuntimeError());
+    ASSERT_STR_CONTAINS(err, ts_uuid);
+  }
+  // The ksck output contains the dead tserver.
+  {
+    string out;
+    string err;
+    Status s =
+        RunActionStdoutStderrString(Substitute("cluster ksck $0", master_addrs_str), &out, &err);
+    ASSERT_TRUE(s.IsRuntimeError());
+    ASSERT_STR_CONTAINS(out, Substitute("$0 | $1 | UNAVAILABLE", ts_uuid, ts_hostport));
+  }
+
+  // We could force unregister the tserver.
+  ASSERT_OK(RunKuduTool(
+      {"tserver", "unregister", master_addrs_str, ts_uuid, "-force_unregister_live_tserver"}));
+  {
+    string out;
+    NO_FATALS(RunActionStdoutString(Substitute("cluster ksck $0", master_addrs_str), &out));
+    ASSERT_STR_NOT_CONTAINS(out, ts_uuid);
+  }
+
+  // After several hearbeat intervals, the tserver still does not appear in ksck output.
+  SleepFor(MonoDelta::FromMilliseconds(3 * FLAGS_heartbeat_interval_ms));
+  {
+    string out;
+    NO_FATALS(RunActionStdoutString(Substitute("cluster ksck $0", master_addrs_str), &out));
+    ASSERT_STR_NOT_CONTAINS(out, ts_uuid);
+  }
+}
+
+TEST_F(ToolTest, TestLocalReplicaCopyLocal) {
+  // Create replicas and fill some data.
+  InternalMiniClusterOptions opts;
+  opts.num_data_dirs = 3;
+  NO_FATALS(StartMiniCluster(std::move(opts)));
+  NO_FATALS(CreateTableWithFlushedData("tablename", mini_cluster_.get()));
+
+  string tablet_id;
+  string src_fs_paths_with_prefix;
+  string src_fs_paths;
+  {
+    tablet_id = mini_cluster_->mini_tablet_server(0)->ListTablets()[0];
+
+    // Obtain source filesystem options.
+    auto fs_manager = mini_cluster_->mini_tablet_server(0)->server()->fs_manager();
+    string src_fs_wal_dir = fs_manager->GetWalsRootDir();
+    src_fs_wal_dir = src_fs_wal_dir.substr(0, src_fs_wal_dir.length() - strlen("/wals"));
+    string src_fs_data_dirs = JoinMapped(fs_manager->GetDataRootDirs(),
+        [] (const string& data_dir) {
+          return data_dir.substr(0, data_dir.length() - strlen("/data"));
+        }, ",");
+    src_fs_paths_with_prefix = "--src_fs_wal_dir=" + src_fs_wal_dir + " "
+                               "--src_fs_data_dirs=" + src_fs_data_dirs;
+    src_fs_paths = "--fs_wal_dir=" + src_fs_wal_dir + " "
+                   "--fs_data_dirs=" + src_fs_data_dirs;
+  }
+
+  string dst_fs_paths_with_prefix;
+  string dst_fs_paths;
+  {
+    // Build destination filesystem layout, and obtain filesystem options.
+    const string kTestDstDir = GetTestPath("dst_test");
+    unique_ptr<FsManager> dst_fs_manager =
+        std::make_unique<FsManager>(Env::Default(), FsManagerOpts(kTestDstDir));
+    ASSERT_OK(dst_fs_manager->CreateInitialFileSystemLayout());
+    ASSERT_OK(dst_fs_manager->Open());
+    dst_fs_paths_with_prefix = "--dst_fs_wal_dir=" + kTestDstDir + " "
+                               "--dst_fs_data_dirs=" + kTestDstDir;
+    dst_fs_paths = "--fs_wal_dir=" + kTestDstDir + " "
+                   "--fs_data_dirs=" + kTestDstDir;
+  }
+
+  string encryption_args = env_->IsEncryptionEnabled() ? GetEncryptionArgs() : "";
+
+  // Copy replica from local filesystem failed, because the tserver on source filesystem
+  // is still running.
+  string stdout;
+  string stderr;
+  Status s = RunActionStdoutStderrString(
+      Substitute("local_replica copy_from_local $0 $1 $2 $3",
+                 tablet_id, src_fs_paths_with_prefix, dst_fs_paths_with_prefix, encryption_args),
+      &stdout, &stderr);
+  SCOPED_TRACE(stdout);
+  SCOPED_TRACE(stderr);
+  ASSERT_FALSE(s.ok());
+  ASSERT_STR_MATCHES(stderr,
+                     "failed to load instance files: Could not lock instance file. "
+                     "Make sure that Kudu is not already running");
+
+  // Shutdown mini cluster and copy replica from local filesystem successfully.
+  mini_cluster_->Shutdown();
+  NO_FATALS(RunActionStdoutString(
+      Substitute("local_replica copy_from_local $0 $1 $2 $3",
+                 tablet_id, src_fs_paths_with_prefix, dst_fs_paths_with_prefix, encryption_args),
+      &stdout));
+  SCOPED_TRACE(stdout);
+
+  // Check the source and destination data is matched.
+  string src_stdout;
+  NO_FATALS(RunActionStdoutString(
+      Substitute("local_replica data_size $0 $1 $2",
+                 tablet_id, src_fs_paths, encryption_args), &src_stdout));
+  SCOPED_TRACE(src_stdout);
+
+  string dst_stdout;
+  NO_FATALS(RunActionStdoutString(
+      Substitute("local_replica data_size $0 $1 $2",
+                 tablet_id, dst_fs_paths, encryption_args), &dst_stdout));
+  SCOPED_TRACE(dst_stdout);
+
+  ASSERT_EQ(src_stdout, dst_stdout);
+}
+
+TEST_F(ToolTest, TestRebuildTserverByLocalReplicaCopy) {
+  SKIP_IF_SLOW_NOT_ALLOWED();
+  // Create replicas and fill some data.
+  const int kNumTserver = 3;
+  InternalMiniClusterOptions opts;
+  opts.num_tablet_servers = kNumTserver;
+  // The source filesystem has only 1 data directory.
+  opts.num_data_dirs = 1;
+  NO_FATALS(StartMiniCluster(std::move(opts)));
+  NO_FATALS(CreateTableWithFlushedData("tablename", mini_cluster_.get(), 8, 3));
+
+  // Obtain source cluster options.
+  const int kCopyTserverIndex = 2;
+  vector<string> tablet_ids = mini_cluster_->mini_tablet_server(kCopyTserverIndex)->ListTablets();
+  vector<HostPort> hps;
+  hps.reserve(mini_cluster_->num_tablet_servers());
+  for (int i = 0; i < mini_cluster_->num_tablet_servers(); ++i) {
+    hps.emplace_back(HostPort(mini_cluster_->mini_tablet_server(i)->bound_rpc_addr()));
+  }
+  auto fs_manager = mini_cluster_->mini_tablet_server(kCopyTserverIndex)->server()->fs_manager();
+  string src_fs_wal_dir = fs_manager->GetWalsRootDir();
+  src_fs_wal_dir = src_fs_wal_dir.substr(0, src_fs_wal_dir.length() - strlen("/wals"));
+  string src_fs_data_dirs = JoinMapped(fs_manager->GetDataRootDirs(),
+      [] (const string& data_dir) {
+        return data_dir.substr(0, data_dir.length() - strlen("/data"));
+      }, ",");
+  string src_fs_paths_with_prefix = "--src_fs_wal_dir=" + src_fs_wal_dir + " "
+                                    "--src_fs_data_dirs=" + src_fs_data_dirs;
+  string src_fs_paths = "--fs_wal_dir=" + src_fs_wal_dir + " "
+                        "--fs_data_dirs=" + src_fs_data_dirs;
+
+  // Build destination filesystem layout with source fs uuid, and obtain filesystem options.
+  string dst_fs_paths_with_prefix;
+  string src_tserver_fs_root = mini_cluster_->GetTabletServerFsRoot(kCopyTserverIndex);
+  string dst_tserver_fs_root = mini_cluster_->GetTabletServerFsRoot(kNumTserver);
+  {
+    FsManagerOpts fs_opts;
+    // The new fs layout has 3 data directories.
+    MiniTabletServer::InitFsOpts(3, dst_tserver_fs_root, &fs_opts);
+    string dst_fs_wal_dir = fs_opts.wal_root;
+    string dst_fs_data_dirs = JoinMapped(fs_opts.data_roots,
+        [] (const string& data_root) {
+          return data_root;
+        }, ",");
+    string dst_fs_paths = "--fs_wal_dir=" + dst_fs_wal_dir + " "
+                          "--fs_data_dirs=" + dst_fs_data_dirs;
+    ASSERT_OK(Env::Default()->CreateDir(dst_tserver_fs_root));
+    // Use 'kudu fs format' with '--uuid' to format the new data directories.
+    NO_FATALS(RunActionStdoutNone(Substitute("fs format $0 --uuid=$1",
+                                             dst_fs_paths, fs_manager->uuid())));
+    dst_fs_paths_with_prefix = "--dst_fs_wal_dir=" + dst_fs_wal_dir + " "
+                               "--dst_fs_data_dirs=" + dst_fs_data_dirs;
+  }
+
+  // Shutdown the cluster before copying.
+  NO_FATALS(StopMiniCluster());
+
+  // Copy source tserver's all replicas from local filesystem.
+  string encryption_args = env_->IsEncryptionEnabled() ? GetEncryptionArgs() : "";
+  string stdout;
+  NO_FATALS(RunActionStdoutString(Substitute("local_replica copy_from_local $0 $1 $2 $3",
+                                             JoinStrings(tablet_ids, ","),
+                                             src_fs_paths_with_prefix,
+                                             dst_fs_paths_with_prefix,
+                                             encryption_args),
+                                  &stdout));
+  SCOPED_TRACE(stdout);
+
+  // Replace the old data/wal dirs with the new ones.
+  ASSERT_OK(Env::Default()->RenameFile(src_tserver_fs_root, src_tserver_fs_root + ".bak"));
+  ASSERT_OK(Env::Default()->RenameFile(dst_tserver_fs_root, src_tserver_fs_root));
+
+  // Start masters only.
+  mini_cluster_->opts_.num_tablet_servers = 0;
+  NO_FATALS(mini_cluster_->Start());
+  // Then start tserver with old host:port.
+  ASSERT_OK(mini_cluster_->AddTabletServer(hps[0]));
+  ASSERT_OK(mini_cluster_->AddTabletServer(hps[1]));
+  // The new tserver has 3 data directories.
+  mini_cluster_->opts_.num_data_dirs = 3;
+  ASSERT_OK(mini_cluster_->AddTabletServer(hps[2]));
+  // Wait all tserver start normally.
+  ASSERT_OK(mini_cluster_->WaitForTabletServerCount(3));
+  for (int i = 0; i < mini_cluster_->num_tablet_servers(); ++i) {
+    ASSERT_OK(mini_cluster_->mini_tablet_server(i)->WaitStarted());
+  }
+
+  // Restart the cluster, and check the cluster state is OK.
+  ASSERT_EVENTUALLY([&] {
+    string out;
+    string err;
+    Status s =
+        RunActionStdoutStderrString(Substitute("cluster ksck $0", GetMasterAddrsStr()), &out, &err);
+    ASSERT_TRUE(s.ok()) << s.ToString() << ", err:\n" << err << ", out:\n" << out;
+  });
 }
 
 } // namespace tools

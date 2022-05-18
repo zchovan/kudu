@@ -562,6 +562,7 @@ Status KuduClient::ListTabletServers(vector<KuduTabletServer*>* tablet_servers) 
 }
 
 Status KuduClient::ListTables(vector<string>* tables, const string& filter) {
+  tables->clear();
   vector<Data::TableInfo> tables_info;
   RETURN_NOT_OK(data_->ListTablesWithInfo(this, &tables_info, filter));
   for (auto& info : tables_info) {
@@ -1446,6 +1447,10 @@ KuduClient* KuduSession::client() const {
   return data_->client_.get();
 }
 
+const ResourceMetrics& KuduSession::GetWriteOpMetrics() const {
+  return data_->write_op_metrics_;
+}
+
 ////////////////////////////////////////////////////////////
 // KuduTableAlterer
 ////////////////////////////////////////////////////////////
@@ -1515,13 +1520,13 @@ KuduTableAlterer* KuduTableAlterer::AddRangePartitionWithDimension(
     data_->status_ = Status::InvalidArgument("range partition bounds may not be null");
     return this;
   }
-  if (!lower_bound->schema()->Equals(*upper_bound->schema())) {
+  if (*lower_bound->schema() != *upper_bound->schema()) {
     data_->status_ = Status::InvalidArgument("range partition bounds must have matching schemas");
     return this;
   }
   if (data_->schema_ == nullptr) {
     data_->schema_ = lower_bound->schema();
-  } else if (!lower_bound->schema()->Equals(*data_->schema_)) {
+  } else if (*lower_bound->schema() != *data_->schema_) {
     data_->status_ = Status::InvalidArgument("range partition bounds must have matching schemas");
     return this;
   }
@@ -1547,13 +1552,13 @@ KuduTableAlterer* KuduTableAlterer::DropRangePartition(
     data_->status_ = Status::InvalidArgument("range partition bounds may not be null");
     return this;
   }
-  if (!lower_bound->schema()->Equals(*upper_bound->schema())) {
+  if (*lower_bound->schema() != *upper_bound->schema()) {
     data_->status_ = Status::InvalidArgument("range partition bounds must have matching schemas");
     return this;
   }
   if (data_->schema_ == nullptr) {
     data_->schema_ = lower_bound->schema();
-  } else if (!lower_bound->schema()->Equals(*data_->schema_)) {
+  } else if (*lower_bound->schema() != *data_->schema_) {
     data_->status_ = Status::InvalidArgument("range partition bounds must have matching schemas");
     return this;
   }

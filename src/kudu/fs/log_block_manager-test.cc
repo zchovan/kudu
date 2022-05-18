@@ -65,6 +65,7 @@
 #include "kudu/util/stopwatch.h" // IWYU pragma: keep
 #include "kudu/util/test_macros.h"
 #include "kudu/util/test_util.h"
+#include "kudu/util/threadpool.h"
 
 using kudu::pb_util::ReadablePBContainerFile;
 using std::set;
@@ -88,6 +89,8 @@ DECLARE_string(env_inject_eio_globs);
 DECLARE_uint64(log_container_preallocate_bytes);
 DECLARE_uint64(log_container_max_size);
 DECLARE_uint64(log_container_metadata_max_size);
+DECLARE_bool(log_container_metadata_runtime_compact);
+DECLARE_double(log_container_metadata_size_before_compact_ratio);
 DEFINE_int32(startup_benchmark_block_count_for_testing, 1000000,
              "Block count to do startup benchmark.");
 DEFINE_int32(startup_benchmark_data_dir_count_for_testing, 8,
@@ -200,6 +203,10 @@ class LogBlockManagerTest : public KuduTest, public ::testing::WithParamInterfac
     DoGetContainers(METADATA_FILES, &metadata_files);
     ASSERT_EQ(1, metadata_files.size());
     *metadata_file = metadata_files[0];
+  }
+
+  void GetContainerMetadataFiles(vector<string>* metadata_files) {
+    DoGetContainers(METADATA_FILES, metadata_files);
   }
 
   // Like GetOnlyContainerDataFile(), but returns a container name (i.e. data
@@ -350,7 +357,10 @@ TEST_P(LogBlockManagerTest, MetricsTest) {
 
   // Lower the max container size so that we can more easily test full
   // container metrics.
-  FLAGS_log_container_max_size = 1024;
+  // TODO(abukor): If this is 1024, this becomes full when writing the first
+  // block because of alignments. If it is over 4k, it fails with encryption
+  // disabled due to having only 5 containers instead of 10. Investigate this.
+  FLAGS_log_container_max_size = GetParam() ? 8192 : 1024;
 
   // One block --> one container.
   unique_ptr<WritableBlock> writer;
@@ -446,10 +456,7 @@ TEST_P(LogBlockManagerTest, MetricsTest) {
           {1, &METRIC_block_manager_total_blocks_deleted},
           {0, &METRIC_log_block_manager_dead_containers_deleted} }));
   }
-  // Wait for the actual hole punching to take place.
-  for (const auto& data_dir : dd_manager_->dirs()) {
-    data_dir->WaitOnClosures();
-  }
+  dd_manager_->WaitOnClosures();
   NO_FATALS(CheckLogMetrics(new_entity,
       { {9 * 1024, &METRIC_log_block_manager_bytes_under_management},
         {10, &METRIC_log_block_manager_blocks_under_management},
@@ -821,9 +828,10 @@ TEST_P(LogBlockManagerTest, TestMetadataTruncation) {
   uint64_t latest_meta_size;
   ASSERT_OK(env_->GetFileSize(metadata_path, &latest_meta_size));
   ASSERT_OK(env_->NewRandomAccessFile(raf_opts, metadata_path, &meta_file));
+  latest_meta_size -= meta_file->GetEncryptionHeaderSize();
   unique_ptr<uint8_t[]> scratch(new uint8_t[latest_meta_size]);
   Slice result(scratch.get(), latest_meta_size);
-  ASSERT_OK(meta_file->Read(0, result));
+  ASSERT_OK(meta_file->Read(meta_file->GetEncryptionHeaderSize(), result));
   string data = result.ToString();
   // Flip the high bit of the length field, which is a 4-byte little endian
   // unsigned integer. This will cause the length field to represent a large
@@ -839,7 +847,7 @@ TEST_P(LogBlockManagerTest, TestMetadataTruncation) {
   // Now try to reopen the container.
   // This should look like a bad checksum, and it's not recoverable.
   s = ReopenBlockManager();
-  ASSERT_TRUE(s.IsCorruption());
+  ASSERT_TRUE(s.IsCorruption()) << s.ToString();
   ASSERT_STR_CONTAINS(s.ToString(), "Incorrect checksum");
 
   // Now truncate both the data and metadata files.
@@ -892,7 +900,8 @@ TEST_P(LogBlockManagerTest, TestPreallocationAndTruncation) {
   ASSERT_OK(writer->Close());
   uint64_t size_after_close;
   ASSERT_OK(env_->GetFileSizeOnDisk(fname, &size_after_close));
-  ASSERT_EQ(FLAGS_log_container_max_size, size_after_close);
+  ASSERT_GE(size_after_close, FLAGS_log_container_max_size);
+  ASSERT_LT(size_after_close, size_after_append);
 
   // Now test the same startup behavior by artificially growing the file
   // and reopening the block manager.
@@ -929,7 +938,7 @@ TEST_P(LogBlockManagerTest, TestPreallocationAndTruncation) {
     ASSERT_OK(ReopenBlockManager());
     uint64_t size_after_reopen;
     ASSERT_OK(env_->GetFileSizeOnDisk(fname, &size_after_reopen));
-    ASSERT_EQ(FLAGS_log_container_max_size, size_after_reopen);
+    ASSERT_EQ(size_after_close, size_after_reopen);
   }
 }
 
@@ -1146,7 +1155,7 @@ TEST_P(LogBlockManagerTest, TestFailMultipleTransactionsPerContainer) {
     FLAGS_crash_on_eio = false;
     FLAGS_env_inject_eio = 1.0;
     Status s = block_transactions[0]->CommitCreatedBlocks();
-    ASSERT_TRUE(s.IsIOError());
+    ASSERT_TRUE(s.IsIOError()) << s.ToString();
   }
 
   // Now try to add some more blocks.
@@ -1159,7 +1168,7 @@ TEST_P(LogBlockManagerTest, TestFailMultipleTransactionsPerContainer) {
     // new container.
     Status s = block->Append("x");
     if (i == 0) {
-      ASSERT_TRUE(s.IsIOError());
+      ASSERT_TRUE(s.IsIOError()) << s.ToString();
     } else {
       ASSERT_OK_FAST(s);
       ASSERT_OK_FAST(block->Finalize());
@@ -1265,8 +1274,99 @@ TEST_P(LogBlockManagerTest, TestContainerBlockLimitingByMetadataSize) {
   NO_FATALS(AssertNumContainers(4));
 }
 
+TEST_F(LogBlockManagerTest, TestContainerBlockLimitingByMetadataSizeWithCompaction) {
+  const int kNumBlocks = 2000;
+  const int kNumThreads = 10;
+  const double kLiveBlockRatio = 0.1;
+
+  // Creates and deletes some blocks.
+  auto create_and_delete_blocks = [&]() {
+    vector<BlockId> ids;
+    // Creates 'kNumBlocks' blocks.
+    for (int i = 0; i < kNumBlocks; i++) {
+      unique_ptr<WritableBlock> block;
+      RETURN_NOT_OK(bm_->CreateBlock(test_block_opts_, &block));
+      RETURN_NOT_OK(block->Append("aaaa"));
+      RETURN_NOT_OK(block->Close());
+      ids.push_back(block->id());
+    }
+
+    // Deletes 'kNumBlocks * (1 - kLiveBlockRatio)' blocks.
+    shared_ptr<BlockDeletionTransaction> deletion_transaction =
+        bm_->NewDeletionTransaction();
+    for (const auto& id : ids) {
+      if (rand() % 100 < 100 * kLiveBlockRatio) {
+        continue;
+      }
+      deletion_transaction->AddDeletedBlock(id);
+    }
+    vector<BlockId> deleted;
+    RETURN_NOT_OK(deletion_transaction->CommitDeletedBlocks(&deleted));
+
+    return Status::OK();
+  };
+
+  // Create a thread pool to create and delete blocks.
+  unique_ptr<ThreadPool> pool;
+  ASSERT_OK(ThreadPoolBuilder("test-metadata-compact-pool")
+                .set_max_threads(kNumThreads)
+                .Build(&pool));
+  auto mt_create_and_delete_blocks = [&]() {
+    for (int i = 0; i < kNumThreads; ++i) {
+      ASSERT_OK(pool->Submit(create_and_delete_blocks));
+    }
+    pool->Wait();
+    dd_manager_->WaitOnClosures();
+  };
+
+  FLAGS_log_container_metadata_runtime_compact = true;
+  // Define a small value to make metadata easy to be full.
+  FLAGS_log_container_metadata_max_size = 32 * 1024;
+  NO_FATALS(mt_create_and_delete_blocks());
+  vector<string> metadata_files;
+  NO_FATALS(GetContainerMetadataFiles(&metadata_files));
+  for (const auto& metadata_file : metadata_files) {
+    uint64_t file_size;
+    NO_FATALS(env_->GetFileSize(metadata_file, &file_size));
+    ASSERT_GE(FLAGS_log_container_metadata_max_size *
+                  FLAGS_log_container_metadata_size_before_compact_ratio,
+              file_size);
+  }
+
+  // Reopen and test again.
+  ASSERT_OK(ReopenBlockManager());
+  NO_FATALS(mt_create_and_delete_blocks());
+  NO_FATALS(GetContainerMetadataFiles(&metadata_files));
+  for (const auto& metadata_file : metadata_files) {
+    uint64_t file_size;
+    NO_FATALS(env_->GetFileSize(metadata_file, &file_size));
+    ASSERT_GE(FLAGS_log_container_metadata_max_size *
+                  FLAGS_log_container_metadata_size_before_compact_ratio,
+              file_size);
+  }
+
+  // Now remove the limit and create more blocks. They should go into existing
+  // containers, which are now no longer full.
+  FLAGS_log_container_metadata_runtime_compact = false;
+  ASSERT_OK(ReopenBlockManager());
+  NO_FATALS(mt_create_and_delete_blocks());
+  NO_FATALS(GetContainerMetadataFiles(&metadata_files));
+  bool exist_larger_one = false;
+  for (const auto& metadata_file : metadata_files) {
+    uint64_t file_size;
+    NO_FATALS(env_->GetFileSize(metadata_file, &file_size));
+    if (file_size > FLAGS_log_container_metadata_max_size *
+                         FLAGS_log_container_metadata_size_before_compact_ratio) {
+      exist_larger_one = true;
+      break;
+    }
+  }
+  ASSERT_TRUE(exist_larger_one);
+}
+
 TEST_P(LogBlockManagerTest, TestMisalignedBlocksFuzz) {
   EnableEncryption(GetParam());
+
   FLAGS_log_container_preallocate_bytes = 0;
   const int kNumBlocks = 100;
 
@@ -1426,7 +1526,7 @@ TEST_P(LogBlockManagerTest, TestRepairUnpunchedBlocks) {
   FLAGS_log_container_excess_space_before_cleanup_fraction = 0.0;
 
   // Force our single container to become full once created.
-  FLAGS_log_container_max_size = 0;
+  FLAGS_log_container_max_size = GetParam() ? 4096 : 0;
 
   // Force the test to measure extra space in unpunched holes, not in the
   // preallocation buffer.
@@ -1438,9 +1538,8 @@ TEST_P(LogBlockManagerTest, TestRepairUnpunchedBlocks) {
   ASSERT_OK(block->Close());
   string data_file;
   NO_FATALS(GetOnlyContainerDataFile(&data_file));
-  uint64_t file_size_on_disk;
-  ASSERT_OK(env_->GetFileSizeOnDisk(data_file, &file_size_on_disk));
-  ASSERT_EQ(0, file_size_on_disk);
+  uint64_t initial_file_size_on_disk;
+  ASSERT_OK(env_->GetFileSizeOnDisk(data_file, &initial_file_size_on_disk));
 
   // Add some "unpunched blocks" to the container.
   LBMCorruptor corruptor(env_, dd_manager_->GetDirs(), SeedRandom());
@@ -1449,8 +1548,9 @@ TEST_P(LogBlockManagerTest, TestRepairUnpunchedBlocks) {
     ASSERT_OK(corruptor.AddUnpunchedBlockToFullContainer());
   }
 
+  uint64_t file_size_on_disk;
   ASSERT_OK(env_->GetFileSizeOnDisk(data_file, &file_size_on_disk));
-  ASSERT_GT(file_size_on_disk, 0);
+  ASSERT_GT(file_size_on_disk, initial_file_size_on_disk);
 
   // Check the report.
   FsReport report;
@@ -1462,7 +1562,7 @@ TEST_P(LogBlockManagerTest, TestRepairUnpunchedBlocks) {
   string container;
   NO_FATALS(GetOnlyContainer(&container));
   ASSERT_EQ(container, fcs.container);
-  ASSERT_EQ(file_size_on_disk, fcs.excess_bytes);
+  ASSERT_EQ(file_size_on_disk, fcs.excess_bytes + initial_file_size_on_disk);
   ASSERT_TRUE(fcs.repaired);
   report.full_container_space_check->entries.clear();
   NO_FATALS(AssertEmptyReport(report));
@@ -1475,7 +1575,7 @@ TEST_P(LogBlockManagerTest, TestRepairUnpunchedBlocks) {
 
   // File size should be 0 post-repair.
   ASSERT_OK(env_->GetFileSizeOnDisk(data_file, &file_size_on_disk));
-  ASSERT_EQ(0, file_size_on_disk);
+  ASSERT_EQ(initial_file_size_on_disk, file_size_on_disk);
 }
 
 TEST_P(LogBlockManagerTest, TestRepairIncompleteContainer) {
@@ -1950,7 +2050,7 @@ TEST_P(LogBlockManagerTest, TestDeleteDeadContainersByDeletionTransaction) {
     }
     {
       // The last block makes a full container.
-      FLAGS_log_container_max_size = 1;
+      FLAGS_log_container_max_size = GetParam() ? 4097 : 1;
       unique_ptr<WritableBlock> writer;
       ASSERT_OK(bm_->CreateBlock(test_block_opts_, &writer));
       blocks.emplace_back(writer->id());

@@ -27,11 +27,13 @@ import static org.apache.kudu.test.ClientTestUtil.loadDefaultTable;
 import static org.apache.kudu.test.MetricTestUtils.totalRequestCount;
 import static org.apache.kudu.test.MetricTestUtils.validateRequestCount;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -41,6 +43,8 @@ import java.util.Set;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
+import com.google.common.collect.Lists;
+import com.google.protobuf.CodedInputStream;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -51,6 +55,7 @@ import org.apache.kudu.ColumnSchema;
 import org.apache.kudu.Schema;
 import org.apache.kudu.Type;
 import org.apache.kudu.test.KuduTestHarness;
+import org.apache.kudu.test.cluster.KuduBinaryLocator;
 import org.apache.kudu.test.cluster.MiniKuduCluster;
 
 public class TestScanToken {
@@ -135,6 +140,104 @@ public class TestScanToken {
     } finally {
       AsyncKuduClient.FETCH_TABLETS_PER_RANGE_LOOKUP = saveFetchTablets;
     }
+  }
+
+  /**
+   * Regression test for KUDU-3349
+   */
+  @Test
+  public void testScanTokenWithWrongUuidSerialization() throws Exception {
+    // Prepare the table for testing.
+    Schema schema = createManyStringsSchema();
+    CreateTableOptions createOptions = new CreateTableOptions();
+    final int buckets = 8;
+    createOptions.addHashPartitions(ImmutableList.of("key"), buckets);
+    client.createTable(testTableName, schema, createOptions);
+
+    KuduSession session = client.newSession();
+    KuduTable table = client.openTable(testTableName);
+    final int totalRows = 100;
+    for (int i = 0; i < totalRows; i++) {
+      Insert insert = table.newInsert();
+      PartialRow row = insert.getRow();
+      row.addString("key", String.format("key_%02d", i));
+      row.addString("c1", "c1_" + i);
+      row.addString("c2", "c2_" + i);
+      assertEquals(session.apply(insert).hasRowError(), false);
+    }
+    KuduScanToken.KuduScanTokenBuilder tokenBuilder = client.newScanTokenBuilder(table);
+    tokenBuilder.setProjectedColumnIndexes(ImmutableList.of());
+    List<KuduScanToken> tokens = tokenBuilder.build();
+    assertEquals(buckets, tokens.size());
+
+    // Create a new client, open the newly created kudu table, and new scanners.
+    AsyncKuduClient newAsyncClient = new AsyncKuduClient.AsyncKuduClientBuilder(
+        harness.getMasterAddressesAsString())
+        .build();
+    KuduClient newClient = newAsyncClient.syncClient();
+    KuduTable newTable = newClient.openTable(testTableName);
+    List<KuduScanner> kuduScanners = new ArrayList<>(buckets);
+    List<String> tabletIds = new ArrayList<>(buckets);
+    for (KuduScanToken token : tokens) {
+      tabletIds.add(new String(token.getTablet().getTabletId(),
+          java.nio.charset.StandardCharsets.UTF_8));
+      KuduScanner kuduScanner = token.intoScanner(newAsyncClient.syncClient());
+      kuduScanners.add(kuduScanner);
+    }
+
+    // Step down all tablet leaders.
+    KuduBinaryLocator.ExecutableInfo exeInfo = null;
+    try {
+      exeInfo = KuduBinaryLocator.findBinary("kudu");
+    } catch (FileNotFoundException e) {
+      LOG.error(e.getMessage());
+      fail();
+    }
+    for (String tabletId : tabletIds) {
+      List<String> commandLine = Lists.newArrayList(exeInfo.exePath(),
+              "tablet",
+              "leader_step_down",
+              harness.getMasterAddressesAsString(),
+              tabletId);
+      ProcessBuilder processBuilder = new ProcessBuilder(commandLine);
+      processBuilder.environment().putAll(exeInfo.environment());
+      // Step down the tablet leaders one by one after a fix duration.
+      try {
+        Thread.sleep(1000);
+      } catch (InterruptedException e) {
+        LOG.error(e.getMessage());
+      }
+    }
+    // Delete all rows first through the new client.
+    KuduSession newSession = newClient.newSession();
+
+    for (int i = 0; i < totalRows; i++) {
+      Operation del = newTable.newDelete();
+      PartialRow row = del.getRow();
+      row.addString("key", String.format("key_%02d", i));
+      del.setRow(row);
+      OperationResponse response = newSession.apply(del);
+      assertEquals(response.hasRowError(), false);
+    }
+
+    // Insert all rows again through the new client.
+    for (int i = 0; i < totalRows; i++) {
+      Insert insert = newTable.newInsert();
+      PartialRow row = insert.getRow();
+      row.addString("key", String.format("key_%02d", i));
+      row.addString("c1", "c1_" + i);
+      row.addString("c2", "c2_" + i);
+      assertEquals(newSession.apply(insert).hasRowError(), false);
+    }
+
+    // Verify all the row count.
+    int rowCount = 0;
+    for (KuduScanner kuduScanner : kuduScanners) {
+      while (kuduScanner.hasMoreRows()) {
+        rowCount += kuduScanner.nextRows().numRows;
+      }
+    }
+    assertEquals(totalRows, rowCount);
   }
 
   /**
@@ -695,6 +798,36 @@ public class TestScanToken {
   }
 
   /**
+   * Verify the deserialization of RemoteTablet from KuduScanToken.
+   * Regression test for KUDU-3349.
+   */
+  @Test
+  public void testRemoteTabletVerification() throws IOException {
+    final int NUM_ROWS_DESIRED = 100;
+    KuduTable table = createDefaultTable(client, testTableName);
+    loadDefaultTable(client, testTableName, NUM_ROWS_DESIRED);
+    KuduScanToken.KuduScanTokenBuilder builder =
+            new KuduScanToken.KuduScanTokenBuilder(asyncClient, table);
+    List<KuduScanToken> tokens = builder.build();
+    List<HostAndPort> tservers = harness.getTabletServers();
+    for (KuduScanToken token : tokens) {
+      byte[] serialized = token.serialize();
+      Client.ScanTokenPB scanTokenPB =
+          Client.ScanTokenPB.parseFrom(CodedInputStream.newInstance(serialized));
+      Client.TabletMetadataPB tabletMetadata = scanTokenPB.getTabletMetadata();
+      Partition partition =
+          ProtobufHelper.pbToPartition(tabletMetadata.getPartition());
+      RemoteTablet remoteTablet = KuduScanToken.newRemoteTabletFromTabletMetadata(tabletMetadata,
+          table.getTableId(), partition);
+      for (ServerInfo si : remoteTablet.getTabletServersCopy()) {
+        assertEquals(si.getUuid().length(), 32);
+        HostAndPort hostAndPort = si.getHostAndPort();
+        assertEquals(tservers.contains(hostAndPort), true);
+      }
+    }
+  }
+
+  /**
    * Regression test for KUDU-3205.
    */
   @Test
@@ -732,5 +865,26 @@ public class TestScanToken {
         new KuduClient.KuduClientBuilder(harness.getMasterAddressesAsString()).build();
     KuduScanner scanner = tokens.get(0).intoScanner(newClient);
     assertEquals(1, countRowsInScan(scanner));
+  }
+
+  @Test
+  public void testScannerBuilderFaultToleranceToggle() throws IOException {
+    KuduTable table = createDefaultTable(client, testTableName);
+    KuduScanner.KuduScannerBuilder scannerBuilder =
+        new KuduScanner.KuduScannerBuilder(asyncClient, table);
+    assertFalse(scannerBuilder.isFaultTolerant);
+    assertEquals(AsyncKuduScanner.ReadMode.READ_LATEST, scannerBuilder.readMode);
+
+    scannerBuilder.setFaultTolerant(true);
+    assertTrue(scannerBuilder.isFaultTolerant);
+    assertEquals(AsyncKuduScanner.ReadMode.READ_AT_SNAPSHOT, scannerBuilder.readMode);
+
+    scannerBuilder.setFaultTolerant(false);
+    assertFalse(scannerBuilder.isFaultTolerant);
+    assertEquals(AsyncKuduScanner.ReadMode.READ_AT_SNAPSHOT, scannerBuilder.readMode);
+
+    scannerBuilder.readMode(AsyncKuduScanner.ReadMode.READ_YOUR_WRITES);
+    assertFalse(scannerBuilder.isFaultTolerant);
+    assertEquals(AsyncKuduScanner.ReadMode.READ_YOUR_WRITES, scannerBuilder.readMode);
   }
 }

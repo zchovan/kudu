@@ -18,16 +18,19 @@
 #include "kudu/tools/rebalancer_tool.h"
 
 #include <algorithm>
-#include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <memory>
 #include <numeric>
 #include <random>
 #include <set>
 #include <string>
+#include <tuple>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -39,7 +42,9 @@
 #include "kudu/gutil/basictypes.h"
 #include "kudu/gutil/map-util.h"
 #include "kudu/gutil/port.h"
+#include "kudu/gutil/strings/join.h"
 #include "kudu/gutil/strings/substitute.h"
+#include "kudu/gutil/sysinfo.h"
 #include "kudu/master/master.pb.h"
 #include "kudu/rebalance/cluster_status.h"
 #include "kudu/rebalance/placement_policy_util.h"
@@ -51,7 +56,9 @@
 #include "kudu/tools/tool_action_common.h"
 #include "kudu/tools/tool_replica_util.h"
 #include "kudu/util/monotime.h"
+#include "kudu/util/scoped_cleanup.h"
 #include "kudu/util/status.h"
+#include "kudu/util/threadpool.h"
 
 using kudu::cluster_summary::ServerHealth;
 using kudu::cluster_summary::ServerHealthSummary;
@@ -83,6 +90,7 @@ using std::sort;
 using std::string;
 using std::to_string;
 using std::transform;
+using std::unique_ptr;
 using std::unordered_map;
 using std::unordered_set;
 using std::vector;
@@ -92,7 +100,7 @@ namespace kudu {
 namespace tools {
 
 RebalancerTool::RebalancerTool(const Config& config)
-  : Rebalancer(config) {
+    : Rebalancer(config) {
 }
 
 Status RebalancerTool::PrintStats(ostream& out) {
@@ -110,8 +118,8 @@ Status RebalancerTool::PrintStats(ostream& out) {
     return Status::OK();
   }
 
-  // Print information about replica count of healthy ignored tservers.
-  RETURN_NOT_OK(PrintIgnoredTserversStats(ci, out));
+  // Print information about tservers need to empty.
+  RETURN_NOT_OK(PrintIgnoredTserversStats(raw_info, out));
 
   if (ts_id_by_location.size() == 1) {
     // That's about printing information about the whole cluster.
@@ -139,6 +147,7 @@ Status RebalancerTool::PrintStats(ostream& out) {
   sort(locations.begin(), locations.end());
 
   for (const auto& location : locations) {
+    shared_lock<decltype(ksck_lock_)> guard(ksck_lock_);
     ClusterRawInfo raw_info;
     RETURN_NOT_OK(KsckResultsToClusterRawInfo(location, ksck_->results(), &raw_info));
     ClusterInfo ci;
@@ -162,7 +171,11 @@ Status RebalancerTool::Run(RunStatus* result_status, size_t* moves_count) {
   }
 
   ClusterRawInfo raw_info;
-  RETURN_NOT_OK(KsckResultsToClusterRawInfo(boost::none, ksck_->results(), &raw_info));
+  {
+    shared_lock<decltype(ksck_lock_)> guard(ksck_lock_);
+    RETURN_NOT_OK(KsckResultsToClusterRawInfo(
+        boost::none, ksck_->results(), &raw_info));
+  }
 
   ClusterInfo ci;
   RETURN_NOT_OK(BuildClusterInfo(raw_info, MovesInProgress(), &ci));
@@ -190,7 +203,12 @@ Status RebalancerTool::Run(RunStatus* result_status, size_t* moves_count) {
   }
   if (ts_id_by_location.size() == 1) {
     const auto& location = ts_id_by_location.cbegin()->first;
-    LOG(INFO) << "running whole-cluster rebalancing";
+    const auto& table_filters = config_.table_filters;
+    const auto& msg = table_filters.empty()
+        ? "running whole-cluster rebalancing"
+        : Substitute("running rebalancing for tables: $0",
+                     JoinStrings(table_filters, ","));
+    LOG(INFO) << msg;
     IntraLocationRunner runner(
         this, config_.ignored_tservers, config_.max_moves_per_server, deadline, location);
     RETURN_NOT_OK(runner.Init(config_.master_addresses));
@@ -231,21 +249,94 @@ Status RebalancerTool::Run(RunStatus* result_status, size_t* moves_count) {
       RETURN_NOT_OK(RunWith(&runner, result_status));
       moves_count_total += runner.moves_count();
     }
-    if (config_.run_intra_location_rebalancing) {
+    if (config_.run_intra_location_rebalancing && !ts_id_by_location.empty()) {
+      const size_t locations_num = ts_id_by_location.size();
+      DCHECK_GT(locations_num, 0);
+
+      vector<RunStatus> location_run_status(locations_num, RunStatus::UNKNOWN);
+      vector<Status> location_status(locations_num, Status::OK());
+      vector<size_t> location_moves_count(locations_num, 0);
+      vector<string> location_by_idx(locations_num);
+
+      // Thread pool to run intra-location rebalancing tasks in parallel. Since
+      // the location assignment provides non-intersecting sets of servers, it's
+      // possible to independently move replicas within different locations.
+      // The pool is automatically shutdown in its destructor.
+      unique_ptr<ThreadPool> rebalance_pool;
+      RETURN_NOT_OK(ThreadPoolBuilder("intra-location-rebalancing")
+                    .set_trace_metric_prefix("rebalancer")
+                    .set_max_threads(
+                        config_.intra_location_rebalancing_concurrency == 0
+                            ? base::NumCPUs()
+                            : config_.intra_location_rebalancing_concurrency)
+                    .Build(&rebalance_pool));
+
       // Run the rebalancing within every location (intra-location rebalancing).
+      size_t location_idx = 0;
       for (const auto& elem : ts_id_by_location) {
-        const auto& location = elem.first;
-        // TODO(aserbin): it would be nice to run these rebalancers in parallel
-        LOG(INFO) << "running rebalancer within location '" << location << "'";
-        IntraLocationRunner runner(this,
-                                   config_.ignored_tservers,
-                                   config_.max_moves_per_server,
-                                   deadline,
-                                   location);
-        RETURN_NOT_OK(runner.Init(config_.master_addresses));
-        RETURN_NOT_OK(RunWith(&runner, result_status));
-        moves_count_total += runner.moves_count();
+        auto location = elem.first;
+        location_by_idx[location_idx] = location;
+        LOG(INFO) << Substitute(
+            "starting rebalancing within location '$0'", location);
+        RETURN_NOT_OK(rebalance_pool->Submit(
+            [this, deadline, location = std::move(location),
+             &config = std::as_const(config_),
+             &location_status = location_status[location_idx],
+             &location_moves_count = location_moves_count[location_idx],
+             &location_run_status = location_run_status[location_idx]]() mutable {
+          IntraLocationRunner runner(this,
+                                     config.ignored_tservers,
+                                     config.max_moves_per_server,
+                                     deadline,
+                                     std::move(location));
+          if (const auto& s = runner.Init(config.master_addresses); !s.ok()) {
+            location_status = s;
+            return;
+          }
+          if (const auto& s = RunWith(&runner, &location_run_status); !s.ok()) {
+            location_status = s;
+            return;
+          }
+          location_moves_count = runner.moves_count();
+        }));
+        ++location_idx;
       }
+      // Wait for the completion of the rebalancing process in every location.
+      rebalance_pool->Wait();
+
+      size_t location_balancing_moves = 0;
+      Status status;
+      RunStatus result_run_status = RunStatus::UNKNOWN;
+      for (size_t location_idx = 0; location_idx < locations_num; ++location_idx) {
+        // This 'for' cycle scope contains logic to compose the overall status
+        // of the intra-location rebalancing based on the statuses of
+        // the individual per-location rebalancing tasks.
+        const auto& s = location_status[location_idx];
+        if (s.ok()) {
+          const auto rs = location_run_status[location_idx];
+          DCHECK(rs != RunStatus::UNKNOWN);
+          if (result_run_status == RunStatus::UNKNOWN ||
+              result_run_status == RunStatus::CLUSTER_IS_BALANCED) {
+            result_run_status = rs;
+          }
+          location_balancing_moves += location_moves_count[location_idx];
+        } else {
+          auto s_with_location_info = s.CloneAndPrepend(Substitute(
+              "location $0", location_by_idx[location_idx]));
+          if (status.ok()) {
+            // Update the overall status to be first seen non-OK status.
+            status = s_with_location_info;
+          } else {
+            // Update the overall status to add info on next non-OK status;
+            status = status.CloneAndAppend(s_with_location_info.message());
+          }
+        }
+      }
+      // Check for the status and bail out if there was an error.
+      RETURN_NOT_OK(status);
+
+      moves_count_total += location_balancing_moves;
+      *result_status = result_run_status;
     }
   }
   if (moves_count != nullptr) {
@@ -350,16 +441,20 @@ Status RebalancerTool::KsckResultsToClusterRawInfo(const boost::optional<string>
   return Status::OK();
 }
 
-Status RebalancerTool::PrintIgnoredTserversStats(const ClusterInfo& ci,
+Status RebalancerTool::PrintIgnoredTserversStats(const ClusterRawInfo& raw_info,
                                                  ostream& out) const {
-  const auto& tservers_to_empty = ci.tservers_to_empty;
-  if (tservers_to_empty.empty()) {
+  if (config_.ignored_tservers.empty() || !config_.move_replicas_from_ignored_tservers) {
     return Status::OK();
   }
+  unordered_set<string> tservers_to_empty;
+  GetTServersToEmpty(raw_info, &tservers_to_empty);
+  TServersToEmptyMap tservers_to_empty_map;
+  BuildTServersToEmptyInfo(raw_info, MovesInProgress(), tservers_to_empty, &tservers_to_empty_map);
   out << "Per-server replica distribution summary for tservers_to_empty:" << endl;
   DataTable summary({"Server UUID", "Replica Count"});
-  for (const auto& elem: tservers_to_empty) {
-    summary.AddRow({ elem.first, to_string(elem.second) });
+  for (const auto& ts : tservers_to_empty) {
+    auto* tablets = FindOrNull(tservers_to_empty_map, ts);
+    summary.AddRow({ts, tablets ? to_string(tablets->size()) : "0"});
   }
   RETURN_NOT_OK(summary.PrintTo(out));
   out << endl;
@@ -401,6 +496,15 @@ Status RebalancerTool::PrintLocationBalanceStats(const string& location,
     out << "--------------------------------------------------" << endl;
   }
 
+  // Build dictionary to resolve tablet server UUID into its RPC address.
+  unordered_map<string, string> tserver_endpoints;
+  {
+    const auto& tserver_summaries = raw_info.tserver_summaries;
+    for (const auto& summary : tserver_summaries) {
+      tserver_endpoints.emplace(summary.uuid, summary.address);
+    }
+  }
+
   // Per-server replica distribution stats.
   {
     out << "Per-server replica distribution summary:" << endl;
@@ -429,17 +533,10 @@ Status RebalancerTool::PrintLocationBalanceStats(const string& location,
     out << endl;
 
     if (config_.output_replica_distribution_details) {
-      const auto& tserver_summaries = raw_info.tserver_summaries;
-      unordered_map<string, string> tserver_endpoints;
-      for (const auto& summary : tserver_summaries) {
-        tserver_endpoints.emplace(summary.uuid, summary.address);
-      }
-
       out << "Per-server replica distribution details:" << endl;
       DataTable servers_info({ "UUID", "Address", "Replica Count" });
-      for (const auto& elem : servers_load_info) {
-        const auto& id = elem.second;
-        servers_info.AddRow({ id, tserver_endpoints[id], to_string(elem.first) });
+      for (const auto& [load, id] : servers_load_info) {
+        servers_info.AddRow({ id, tserver_endpoints[id], to_string(load) });
       }
       RETURN_NOT_OK(servers_info.PrintTo(out));
       out << endl;
@@ -476,24 +573,99 @@ Status RebalancerTool::PrintLocationBalanceStats(const string& location,
       for (const auto& summary : table_summaries) {
         table_info.emplace(summary.id, &summary);
       }
-      out << "Per-table replica distribution details:" << endl;
-      DataTable skew(
-          { "Table Id", "Replica Count", "Replica Skew", "Table Name" });
-      for (const auto& elem : table_skew_info) {
-        const auto& table_id = elem.second.table_id;
-        const auto it = table_info.find(table_id);
-        const auto* table_summary =
-            (it == table_info.end()) ? nullptr : it->second;
-        const auto& table_name = table_summary ? table_summary->name : "";
-        const auto total_replica_count = table_summary
-            ? table_summary->replication_factor * table_summary->TotalTablets()
-            : 0;
-        skew.AddRow({ table_id,
-                      to_string(total_replica_count),
-                      to_string(elem.first),
-                      table_name });
+      if (config_.enable_range_rebalancing) {
+        out << "Per-range replica distribution details for tables" << endl;
+
+        // Build mapping {table_id, tag} --> per-server replica count map.
+        // Using ordered dictionary since it's targeted for printing later.
+        map<pair<string, string>, map<string, size_t>> range_dist_stats;
+        for (const auto& [_, balance_info] : table_skew_info) {
+          const auto& table_id = balance_info.table_id;
+          const auto& tag = balance_info.tag;
+          auto it = range_dist_stats.emplace(
+              std::make_pair(table_id, tag), map<string, size_t>{});
+          const auto& server_info = balance_info.servers_by_replica_count;
+          for (const auto& [count, server_uuid] : server_info) {
+            auto count_it = it.first->second.emplace(server_uuid, 0).first;
+            count_it->second += count;
+          }
+        }
+
+        // Build the mapping for the per-range skew summary table, i.e.
+        // {tablet_id, tag} --> {num_of_replicas, per_server_replica_skew}.
+        map<pair<string, string>, pair<size_t, size_t>> range_skew_stats;
+        for (const auto& [table_range, per_server_stats] : range_dist_stats) {
+          size_t total_count = 0;
+          size_t min_per_server_count = std::numeric_limits<size_t>::max();
+          size_t max_per_server_count = std::numeric_limits<size_t>::min();
+          for (const auto& [server_uuid, replica_count] : per_server_stats) {
+            total_count += replica_count;
+            if (replica_count > max_per_server_count) {
+              max_per_server_count = replica_count;
+            }
+            if (replica_count < min_per_server_count) {
+              min_per_server_count = replica_count;
+            }
+          }
+          size_t skew = max_per_server_count - min_per_server_count;
+          range_skew_stats.emplace(table_range, std::make_pair(total_count, skew));
+        }
+
+        string prev_table_id;
+        for (const auto& [table_info, per_server_stats] : range_dist_stats) {
+          const auto& table_id = table_info.first;
+          const auto& table_range = table_info.second;
+          if (prev_table_id != table_id) {
+            prev_table_id = table_id;
+            out << endl << "Table: " << table_id << endl << endl;
+            out << "Number of tablet replicas at servers for each range" << endl;
+            DataTable range_skew_summary_table(
+                { "Max Skew", "Total Count", "Range Start Key" });
+            const auto it_begin = range_skew_stats.find(table_info);
+            for (auto it = it_begin; it != range_skew_stats.end(); ++it) {
+              const auto& cur_table_id = it->first.first;
+              if (cur_table_id != table_id) {
+                break;
+              }
+              const auto& range = it->first.second;
+              const auto replica_count = it->second.first;
+              const auto replica_skew = it->second.second;
+              range_skew_summary_table.AddRow(
+                  { to_string(replica_skew), to_string(replica_count), range });
+            }
+            RETURN_NOT_OK(range_skew_summary_table.PrintTo(out));
+            out << endl;
+          }
+          out << "Range start key: '" << table_range << "'" << endl;
+          DataTable skew_table({ "UUID", "Server address", "Replica Count" });
+          for (const auto& stat : per_server_stats) {
+            const auto& srv_uuid = stat.first;
+            const auto& srv_address = FindOrDie(tserver_endpoints, srv_uuid);
+            skew_table.AddRow({ srv_uuid, srv_address, to_string(stat.second) });
+          }
+          RETURN_NOT_OK(skew_table.PrintTo(out));
+          out << endl;
+        }
+      } else {
+        out << "Per-table replica distribution details:" << endl;
+        DataTable skew_table(
+            { "Table Id", "Replica Count", "Replica Skew", "Table Name" });
+        for (const auto& [skew, balance_info] : table_skew_info) {
+          const auto& table_id = balance_info.table_id;
+          const auto it = table_info.find(table_id);
+          const auto* table_summary =
+              (it == table_info.end()) ? nullptr : it->second;
+          const auto& table_name = table_summary ? table_summary->name : "";
+          const auto total_replica_count = table_summary
+              ? table_summary->replication_factor * table_summary->TotalTablets()
+              : 0;
+          skew_table.AddRow({ table_id,
+                              to_string(total_replica_count),
+                              to_string(skew),
+                              table_name });
+        }
+        RETURN_NOT_OK(skew_table.PrintTo(out));
       }
-      RETURN_NOT_OK(skew.PrintTo(out));
       out << endl;
     }
   }
@@ -641,18 +813,45 @@ Status RebalancerTool::RunWith(Runner* runner, RunStatus* result_status) {
 Status RebalancerTool::GetClusterRawInfo(const boost::optional<string>& location,
                                          ClusterRawInfo* raw_info) {
   RETURN_NOT_OK(RefreshKsckResults());
+  shared_lock<decltype(ksck_lock_)> guard(ksck_lock_);
   return KsckResultsToClusterRawInfo(location, ksck_->results(), raw_info);
 }
 
 Status RebalancerTool::RefreshKsckResults() {
+  std::unique_lock<std::mutex> refresh_guard(ksck_refresh_lock_);
+  if (ksck_refreshing_) {
+    // Other thread is already refreshing the ksck info.
+    ksck_refresh_cv_.wait(refresh_guard, [this]{ return !ksck_refreshing_; });
+    return ksck_refresh_status_;
+  }
+
+  // This thread will be refreshing the ksck info.
+  ksck_refreshing_ = true;
+  refresh_guard.unlock();
+
+  Status refresh_status;
+  SCOPED_CLEANUP({
+    refresh_guard.lock();
+    ksck_refresh_status_ = refresh_status;
+    ksck_refreshing_ = false;
+    refresh_guard.unlock();
+    ksck_refresh_cv_.notify_all();
+  });
   shared_ptr<KsckCluster> cluster;
-  RETURN_NOT_OK_PREPEND(
-      RemoteKsckCluster::Build(config_.master_addresses, &cluster),
-      "unable to build KsckCluster");
+  const auto s = RemoteKsckCluster::Build(config_.master_addresses, &cluster);
+  if (!s.ok()) {
+    refresh_status = s.CloneAndPrepend("unable to build KsckCluster");
+    return refresh_status;
+  }
   cluster->set_table_filters(config_.table_filters);
-  ksck_.reset(new Ksck(cluster));
-  ignore_result(ksck_->Run());
-  return Status::OK();
+
+  {
+    unique_ptr<Ksck> new_ksck(new Ksck(cluster));
+    ignore_result(new_ksck->Run());
+    std::lock_guard<decltype(ksck_lock_)> guard(ksck_lock_);
+    ksck_ = std::move(new_ksck);
+  }
+  return refresh_status;
 }
 
 RebalancerTool::BaseRunner::BaseRunner(RebalancerTool* rebalancer,
@@ -988,7 +1187,7 @@ Status RebalancerTool::AlgoBasedRunner::GetNextMovesImpl(
             });
   for (const auto& move : moves) {
     vector<string> tablet_ids;
-    FindReplicas(move, raw_info, &tablet_ids);
+    rebalancer_->FindReplicas(move, raw_info, &tablet_ids);
     if (!loc) {
       // In case of cross-location (a.k.a. inter-location) rebalancing it is
       // necessary to make sure the majority of replicas would not end up
@@ -1376,52 +1575,26 @@ Status RebalancerTool::IgnoredTserversRunner::GetReplaceMoves(
     const rebalance::ClusterInfo& ci,
     const rebalance::ClusterRawInfo& raw_info,
     vector<Rebalancer::ReplicaMove>* replica_moves) {
-  RETURN_NOT_OK(CheckIgnoredTServers(raw_info, ci));
+  unordered_set<string> tservers_to_empty;
+  rebalancer_->GetTServersToEmpty(raw_info, &tservers_to_empty);
+  RETURN_NOT_OK(CheckIgnoredTServers(raw_info, ci, tservers_to_empty));
 
-  // Build IgnoredTserversInfo.
-  IgnoredTserversInfo ignored_tservers_info;
-  for (const auto& tablet_summary : raw_info.tablet_summaries) {
-    if (ContainsKey(scheduled_moves_, tablet_summary.id)) {
-      continue;
-    }
-    if (tablet_summary.result != cluster_summary::HealthCheckResult::HEALTHY &&
-        tablet_summary.result != cluster_summary::HealthCheckResult::RECOVERING) {
-      LOG(INFO) << Substitute("tablet $0: not considering replicas for movement "
-                              "since the tablet's status is '$1'",
-                              tablet_summary.id,
-                              cluster_summary::HealthCheckResultToString(tablet_summary.result));
-      continue;
-    }
-    TabletInfo tablet_info;
-    for (const auto& replica_info : tablet_summary.replicas) {
-      if (replica_info.is_leader && replica_info.consensus_state) {
-        const auto& cstate = *replica_info.consensus_state;
-        if (cstate.opid_index) {
-          tablet_info.tablet_id = tablet_summary.id;
-          tablet_info.config_idx = *cstate.opid_index;
-          break;
-        }
-      }
-    }
-    for (const auto& replica_info : tablet_summary.replicas) {
-      if (!ContainsKey(ci.tservers_to_empty, replica_info.ts_uuid)) {
-        continue;
-      }
-      auto& tablets = LookupOrEmplace(
-          &ignored_tservers_info, replica_info.ts_uuid, vector<TabletInfo>());
-      tablets.emplace_back(tablet_info);
-    }
-  }
-  GetMovesFromIgnoredTservers(ignored_tservers_info, replica_moves);
+  TServersToEmptyMap tservers_to_empty_map;
+  BuildTServersToEmptyInfo(raw_info, scheduled_moves_, tservers_to_empty, &tservers_to_empty_map);
+
+  GetMovesFromIgnoredTservers(tservers_to_empty_map, replica_moves);
   return Status::OK();
 }
 
-Status RebalancerTool::IgnoredTserversRunner::CheckIgnoredTServers(const ClusterRawInfo& raw_info,
-                                                                   const ClusterInfo& ci) {
-  if (ci.tservers_to_empty.empty()) {
+Status RebalancerTool::IgnoredTserversRunner::CheckIgnoredTServers(
+    const ClusterRawInfo& raw_info,
+    const ClusterInfo& ci,
+    const unordered_set<string>& tservers_to_empty) {
+  if (tservers_to_empty.empty()) {
     return Status::OK();
   }
 
+  // Check whether it is possible to move replicas emptying some tablet servers.
   int remaining_tservers_count = ci.balance.servers_by_total_replica_count.size();
   int max_replication_factor = 0;
   for (const auto& s : raw_info.table_summaries) {
@@ -1435,18 +1608,19 @@ Status RebalancerTool::IgnoredTserversRunner::CheckIgnoredTServers(const Cluster
                    max_replication_factor));
   }
 
-  for (const auto& it : ci.tservers_to_empty) {
-    const string& ts_uuid = it.first;
-    if (!ContainsKey(raw_info.tservers_in_maintenance_mode, ts_uuid)) {
-      return Status::IllegalState(Substitute(
-        "You should set maintenance mode for tablet server $0 first", ts_uuid));
+  // Make sure tablet servers that we need to empty are set maintenance mode.
+  for (const auto& ts : tservers_to_empty) {
+    if (!ContainsKey(raw_info.tservers_in_maintenance_mode, ts)) {
+      return Status::IllegalState(
+          Substitute("You should set maintenance mode for tablet server $0 first", ts));
     }
   }
+
   return Status::OK();
 }
 
 void RebalancerTool::IgnoredTserversRunner::GetMovesFromIgnoredTservers(
-    const IgnoredTserversInfo& ignored_tservers_info,
+    const TServersToEmptyMap& ignored_tservers_info,
     vector<Rebalancer::ReplicaMove>* replica_moves) {
   DCHECK(replica_moves);
   if (ignored_tservers_info.empty()) {

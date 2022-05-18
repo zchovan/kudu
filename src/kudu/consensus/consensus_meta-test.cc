@@ -80,7 +80,7 @@ class ConsensusMetadataTest : public KuduTest, public ::testing::WithParamInterf
 
 
   void EnableEncryption(bool enable) {
-    FLAGS_encrypt_data_at_rest = true;
+    FLAGS_encrypt_data_at_rest = enable;
   }
 
   FsManager fs_manager_;
@@ -156,7 +156,7 @@ TEST_P(ConsensusMetadataTest, TestCreateNoOverwrite) {
 TEST_P(ConsensusMetadataTest, TestFailedLoad) {
   EnableEncryption(GetParam());
   Status s = ConsensusMetadata::Load(&fs_manager_, kTabletId, fs_manager_.uuid());
-  ASSERT_TRUE(s.IsNotFound()) << "Unexpected status: " << s.ToString();
+  ASSERT_TRUE(s.IsNotFound()) << s.ToString();
   LOG(INFO) << "Expected failure: " << s.ToString();
 }
 

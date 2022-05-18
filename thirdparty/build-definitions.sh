@@ -579,7 +579,7 @@ build_lz4() {
     -DBUILD_STATIC_LIBS=On \
     -DCMAKE_INSTALL_PREFIX:PATH=$PREFIX \
     $EXTRA_CMAKE_FLAGS \
-    $LZ4_SOURCE/contrib/cmake_unofficial
+    $LZ4_SOURCE/build/cmake
   ${NINJA:-make} -j$PARALLEL $EXTRA_MAKEFLAGS install
   popd
 }
@@ -742,6 +742,7 @@ build_curl() {
     --disable-smtp \
     --disable-telnet \
     --disable-tftp \
+    --without-brotli \
     --without-libidn2 \
     --without-libpsl \
     --without-librtmp \
@@ -1122,6 +1123,22 @@ build_oatpp_swagger(){
     -DOATPP_BUILD_TESTS=OFF \
     -DOATPP_INSTALL=ON \
     $OATPP_SWAGGER_SOURCE
+  make -j$PARALLEL install
+  popd
+}
+
+build_jwt_cpp() {
+  JWT_CPP_BUILD_DIR=$TP_BUILD_DIR/$JWT_CPP_NAME$MODE_SUFFIX
+  mkdir -p $JWT_CPP_BUILD_DIR
+  pushd $JWT_CPP_BUILD_DIR
+  CFLAGS="$EXTRA_CFLAGS" \
+    CXXFLAGS="$EXTRA_CXXFLAGS $OPENSSL_CFLAGS" \
+    LDFLAGS="$EXTRA_LDFLAGS $OPENSSL_LDFLAGS" \
+    cmake \
+    -DCMAKE_BUILD_TYPE=release \
+    -DCMAKE_INSTALL_PREFIX=$PREFIX \
+    -DJWT_BUILD_EXAMPLES=OFF \
+    $JWT_CPP_SOURCE
   make -j$PARALLEL install
   popd
 }

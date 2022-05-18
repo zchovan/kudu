@@ -16,11 +16,13 @@
 // under the License.
 #pragma once
 
-#include <cstddef>
+#include <condition_variable> // IWYU pragma: keep
 #include <cstdint>
+#include <ctime>
 #include <iosfwd>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <random>
 #include <set>
 #include <string>
@@ -33,6 +35,8 @@
 #include "kudu/client/shared_ptr.h" // IWYU pragma: keep
 #include "kudu/rebalance/rebalance_algo.h"
 #include "kudu/rebalance/rebalancer.h"
+#include "kudu/tools/ksck.h"
+#include "kudu/util/locks.h"
 #include "kudu/util/monotime.h"     // IWYU pragma: keep
 #include "kudu/util/status.h"
 
@@ -44,7 +48,6 @@ class KuduClient;
 
 namespace tools {
 
-class Ksck;
 struct KsckResults;
 
 // A class implementing logic for Kudu cluster rebalancing.
@@ -343,14 +346,6 @@ class RebalancerTool : public rebalance::Rebalancer {
     // Key is tserver UUID which corresponds to value.ts_uuid_from.
     typedef std::unordered_multimap<std::string, Rebalancer::ReplicaMove> MovesToSchedule;
 
-    struct TabletInfo {
-      std::string tablet_id;
-      boost::optional<int64_t> config_idx;  // For CAS-like change of Raft configs.
-    };
-
-    // Mapping tserver UUID to tablets on it.
-    typedef std::unordered_map<std::string, std::vector<TabletInfo>> IgnoredTserversInfo;
-
     // Get replica moves to move replicas from healthy ignored tservers.
     // If returns Status::OK() with replica_moves empty, there would be
     // no replica on the healthy ignored tservers.
@@ -360,10 +355,11 @@ class RebalancerTool : public rebalance::Rebalancer {
 
     // Return Status::OK() if it's safe to move all replicas from the ignored to other servers
     // and all tservers that need to empty are in maintenance mode.
-    Status CheckIgnoredTServers(const rebalance::ClusterRawInfo& raw_info,
-                                const rebalance::ClusterInfo& ci);
+    static Status CheckIgnoredTServers(const rebalance::ClusterRawInfo& raw_info,
+                                       const rebalance::ClusterInfo& ci,
+                                       const std::unordered_set<std::string>& tservers_to_empty);
 
-    void GetMovesFromIgnoredTservers(const IgnoredTserversInfo& ignored_tservers_info,
+    void GetMovesFromIgnoredTservers(const TServersToEmptyMap& ignored_tservers_info,
                                      std::vector<Rebalancer::ReplicaMove>* replica_moves);
 
     // Random device and generator for selecting among multiple choices, when appropriate.
@@ -380,8 +376,8 @@ class RebalancerTool : public rebalance::Rebalancer {
                                      const KsckResults& ksck_info,
                                      rebalance::ClusterRawInfo* raw_info);
 
-  // Print replica count infomation on ClusterInfo::tservers_to_empty.
-  Status PrintIgnoredTserversStats(const rebalance::ClusterInfo& ci,
+  // Print replica count infomation about tservers need to empty.
+  Status PrintIgnoredTserversStats(const rebalance::ClusterRawInfo& raw_info,
                                    std::ostream& out) const;
 
   // Print information on the cross-location balance.
@@ -411,7 +407,13 @@ class RebalancerTool : public rebalance::Rebalancer {
   Status RefreshKsckResults();
 
   // Auxiliary Ksck object to get information on the cluster.
-  std::shared_ptr<Ksck> ksck_;
+  std::unique_ptr<Ksck> ksck_;    // protected by ksck_lock_
+  rw_spinlock ksck_lock_;
+
+  bool ksck_refreshing_{false};   // protected by ksck_refresh_lock_
+  Status ksck_refresh_status_;    // protected by ksck_refresh_lock_
+  std::mutex ksck_refresh_lock_;
+  std::condition_variable ksck_refresh_cv_;
 };
 
 } // namespace tools

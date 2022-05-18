@@ -277,7 +277,7 @@ class ClientTest : public KuduTest {
         .add_master_server_addr(cluster_->mini_master()->bound_rpc_addr().ToString())
         .Build(&client_));
 
-    NO_FATALS(CreateTable(kTableName, 1, GenerateSplitRows(), {}, &client_table_));
+    ASSERT_OK(CreateTable(kTableName, 1, GenerateSplitRows(), {}, &client_table_));
   }
 
   // Looks up the remote tablet entry for a given partition key in the meta cache.
@@ -709,22 +709,22 @@ class ClientTest : public KuduTest {
 
   // Creates a table with 'num_replicas', split into tablets based on
   // 'split_rows' and 'range_bounds' (or single tablet if both are empty).
-  void CreateTable(const string& table_name,
-                   int num_replicas,
-                   vector<unique_ptr<KuduPartialRow>> split_rows,
-                   vector<pair<unique_ptr<KuduPartialRow>,
-                               unique_ptr<KuduPartialRow>>> range_bounds,
-                   shared_ptr<KuduTable>* table) {
+  Status CreateTable(const string& table_name,
+                     int num_replicas,
+                     vector<unique_ptr<KuduPartialRow>> split_rows,
+                     vector<pair<unique_ptr<KuduPartialRow>,
+                                 unique_ptr<KuduPartialRow>>> range_bounds,
+                     shared_ptr<KuduTable>* table) {
 
     bool added_replicas = false;
     // Add more tablet servers to satisfy all replicas, if necessary.
     while (cluster_->num_tablet_servers() < num_replicas) {
-      ASSERT_OK(cluster_->AddTabletServer());
+      RETURN_NOT_OK(cluster_->AddTabletServer());
       added_replicas = true;
     }
 
     if (added_replicas) {
-      ASSERT_OK(cluster_->WaitForTabletServerCount(num_replicas));
+      RETURN_NOT_OK(cluster_->WaitForTabletServerCount(num_replicas));
     }
 
     unique_ptr<KuduTableCreator> table_creator(client_->NewTableCreator());
@@ -734,14 +734,14 @@ class ClientTest : public KuduTest {
     for (auto& bound : range_bounds) {
       table_creator->add_range_partition(bound.first.release(), bound.second.release());
     }
-    ASSERT_OK(table_creator->table_name(table_name)
+    RETURN_NOT_OK(table_creator->table_name(table_name)
                             .schema(&schema_)
                             .num_replicas(num_replicas)
                             .set_range_partition_columns({ "key" })
                             .timeout(MonoDelta::FromSeconds(60))
                             .Create());
 
-    ASSERT_OK(client_->OpenTable(table_name, table));
+    return client_->OpenTable(table_name, table);
   }
 
   // Kills a tablet server.
@@ -886,7 +886,7 @@ TEST_F(ClientTest, TestClusterId) {
 TEST_F(ClientTest, TestListTables) {
   const char* kTable2Name = "client-testtb2";
   shared_ptr<KuduTable> second_table;
-  NO_FATALS(CreateTable(kTable2Name, 1, {}, {}, &second_table));
+  ASSERT_OK(CreateTable(kTable2Name, 1, {}, {}, &second_table));
 
   vector<string> tables;
   ASSERT_OK(client_->ListTables(&tables));
@@ -937,7 +937,7 @@ TEST_F(ClientTest, TestGetTableStatistics) {
 TEST_F(ClientTest, TestBadTable) {
   shared_ptr<KuduTable> t;
   Status s = client_->OpenTable("xxx-does-not-exist", &t);
-  ASSERT_TRUE(s.IsNotFound());
+  ASSERT_TRUE(s.IsNotFound()) << s.ToString();
   ASSERT_STR_CONTAINS(s.ToString(), "Not found: the table does not exist");
 }
 
@@ -1008,7 +1008,7 @@ TEST_F(ClientTest, TestConfiguringScannerLimits) {
   KuduScanner scanner(client_table_.get());
   Status s = scanner.SetLimit(-1);
   ASSERT_STR_CONTAINS(s.ToString(), "must be non-negative");
-  ASSERT_TRUE(s.IsInvalidArgument());
+  ASSERT_TRUE(s.IsInvalidArgument()) << s.ToString();
 
   // Now actually set the limit and open the scanner.
   ASSERT_OK(scanner.SetLimit(kLimit));
@@ -1017,7 +1017,7 @@ TEST_F(ClientTest, TestConfiguringScannerLimits) {
   // Ensure we can't set the limit once we've opened the scanner.
   s = scanner.SetLimit(kLimit);
   ASSERT_STR_CONTAINS(s.ToString(), "must be set before Open()");
-  ASSERT_TRUE(s.IsIllegalState());
+  ASSERT_TRUE(s.IsIllegalState()) << s.ToString();
   int64_t count = 0;
   KuduScanBatch batch;
   while (scanner.HasMoreRows()) {
@@ -1257,7 +1257,7 @@ TEST_P(ScanMultiTabletParamTest, Test) {
       ASSERT_OK(row->SetInt32(0, i * kRowsPerTablet));
       rows.emplace_back(std::move(row));
     }
-    NO_FATALS(CreateTable("TestScanMultiTablet", 1,
+    ASSERT_OK(CreateTable("TestScanMultiTablet", 1,
                           std::move(rows), {}, &table));
   }
 
@@ -1532,7 +1532,7 @@ TEST_F(ClientTest, TestInvalidPredicates) {
 TEST_F(ClientTest, TestScanCloseProxy) {
   const string kEmptyTable = "TestScanCloseProxy";
   shared_ptr<KuduTable> table;
-  NO_FATALS(CreateTable(kEmptyTable, 3, GenerateSplitRows(), {}, &table));
+  ASSERT_OK(CreateTable(kEmptyTable, 3, GenerateSplitRows(), {}, &table));
 
   {
     // Open and close an empty scanner.
@@ -1670,7 +1670,7 @@ TEST_F(ClientTest, TestScanFaultTolerance) {
   FLAGS_leader_failure_exp_backoff_max_delta_ms = 1000;
 
   const int kNumReplicas = 3;
-  NO_FATALS(CreateTable(kScanTable, kNumReplicas, {}, {}, &table));
+  ASSERT_OK(CreateTable(kScanTable, kNumReplicas, {}, {}, &table));
   NO_FATALS(InsertTestRows(table.get(), FLAGS_test_scan_num_rows));
 
   // Do an initial scan to determine the expected rows for later verification.
@@ -1739,7 +1739,7 @@ TEST_F(ClientTest, TestNonFaultTolerantScannerExpired) {
   shared_ptr<KuduTable> table;
 
   const int kNumReplicas = 1;
-  NO_FATALS(CreateTable(kScanTable, kNumReplicas, {}, {}, &table));
+  ASSERT_OK(CreateTable(kScanTable, kNumReplicas, {}, {}, &table));
   NO_FATALS(InsertTestRows(table.get(), FLAGS_test_scan_num_rows));
 
   KuduScanner scanner(table.get());
@@ -2136,7 +2136,7 @@ TEST_F(ClientTest, TestSwappedRangeBounds) {
                 .set_range_partition_columns({ "key" })
                 .Create();
 
-  ASSERT_TRUE(s.IsInvalidArgument());
+  ASSERT_TRUE(s.IsInvalidArgument()) << s.ToString();
   ASSERT_STR_CONTAINS(s.ToString(),
                       "Error creating table TestSwappedRangeBounds on the master: "
                           "range partition lower bound must be less than the upper bound");
@@ -2165,7 +2165,7 @@ TEST_F(ClientTest, TestEqualRangeBounds) {
       .set_range_partition_columns({ "key" })
       .Create();
 
-  ASSERT_TRUE(s.IsInvalidArgument());
+  ASSERT_TRUE(s.IsInvalidArgument()) << s.ToString();
   ASSERT_STR_CONTAINS(s.ToString(),
                       "Error creating table TestEqualRangeBounds on the master: "
                           "range partition lower bound must be less than the upper bound");
@@ -2260,7 +2260,7 @@ TEST_F(ClientTest, TestBasicIdBasedLookup) {
   }
   const auto& kDummyId = "dummy-tablet-id";
   Status s = MetaCacheLookupById(kDummyId, &rt);
-  ASSERT_TRUE(s.IsNotFound());
+  ASSERT_TRUE(s.IsNotFound()) << s.ToString();
   ASSERT_EQ(nullptr, rt);
 
   auto& meta_cache = client_->data_->meta_cache_;
@@ -2471,7 +2471,7 @@ TEST_F(ClientTest, TestMetaCacheLookupNoLeaders) {
 
 TEST_F(ClientTest, TestGetTabletServerBlacklist) {
   shared_ptr<KuduTable> table;
-  NO_FATALS(CreateTable("blacklist",
+  ASSERT_OK(CreateTable("blacklist",
                         3,
                         GenerateSplitRows(),
                         {},
@@ -2508,7 +2508,7 @@ TEST_F(ClientTest, TestGetTabletServerBlacklist) {
     Status s = client_->data_->GetTabletServer(client_.get(), rt,
                                                KuduClient::LEADER_ONLY,
                                                blacklist, &candidates, &rts);
-    ASSERT_TRUE(s.IsServiceUnavailable());
+    ASSERT_TRUE(s.IsServiceUnavailable()) << s.ToString();
   }
   // Keep blacklisting replicas until we run out.
   ASSERT_OK(client_->data_->GetTabletServer(client_.get(), rt,
@@ -2530,7 +2530,7 @@ TEST_F(ClientTest, TestGetTabletServerBlacklist) {
   for (KuduClient::ReplicaSelection selection : selections) {
     Status s = client_->data_->GetTabletServer(client_.get(), rt, selection,
                                                blacklist, &candidates, &rts);
-    ASSERT_TRUE(s.IsServiceUnavailable());
+    ASSERT_TRUE(s.IsServiceUnavailable()) << s.ToString();
   }
 
   // Make sure none of the modes work when all nodes are dead.
@@ -2542,13 +2542,13 @@ TEST_F(ClientTest, TestGetTabletServerBlacklist) {
     Status s = client_->data_->GetTabletServer(client_.get(), rt,
                                                selection,
                                                blacklist, &candidates, &rts);
-    ASSERT_TRUE(s.IsServiceUnavailable());
+    ASSERT_TRUE(s.IsServiceUnavailable()) << s.ToString();
   }
 }
 
 TEST_F(ClientTest, TestGetTabletServerDeterministic) {
   shared_ptr<KuduTable> table;
-  NO_FATALS(CreateTable("selection",
+  ASSERT_OK(CreateTable("selection",
                         3,
                         GenerateSplitRows(),
                         {},
@@ -2598,7 +2598,7 @@ TEST_F(ClientTest, TestGetTabletServerDeterministic) {
 
 TEST_F(ClientTest, TestScanWithEncodedRangePredicate) {
   shared_ptr<KuduTable> table;
-  NO_FATALS(CreateTable("split-table",
+  ASSERT_OK(CreateTable("split-table",
                         1, /* replicas */
                         GenerateSplitRows(),
                         {},
@@ -2722,9 +2722,11 @@ int64_t SumResults(const KuduScanBatch& batch) {
 } // anonymous namespace
 
 TEST_F(ClientTest, TestScannerKeepAlive) {
+  SKIP_IF_SLOW_NOT_ALLOWED();
+
   NO_FATALS(InsertTestRows(client_table_.get(), 1000));
-  // Set the scanner ttl really low
-  FLAGS_scanner_ttl_ms = 100; // 100 milliseconds
+  // Set the scanner TTL low.
+  FLAGS_scanner_ttl_ms = 500;
   // Start a scan but don't get the whole data back
   KuduScanner scanner(client_table_.get());
   // This will make sure we have to do multiple NextBatch calls to the second tablet.
@@ -2756,9 +2758,11 @@ TEST_F(ClientTest, TestScannerKeepAlive) {
   sum += SumResults(batch);
   ASSERT_TRUE(scanner.HasMoreRows());
 
-  // Now loop while keeping the scanner alive. Each time we loop we sleep 1/2 a scanner
-  // ttl interval (the garbage collector is running each 50 msecs too.).
-  for (int i = 0; i < 5; i++) {
+  // Now loop while keeping the scanner alive. Each loop we sleep about 1/10
+  // of the scanner's TTL interval to avoid flakiness due to scheduling
+  // anomalies. The garbage collector runs each 50 msec as well in this test
+  // scenario (controlled by FLAGS_scanner_gc_check_interval_us).
+  for (int i = 0; i < 15; i++) {
     SleepFor(MonoDelta::FromMilliseconds(50));
     ASSERT_OK(scanner.KeepAlive());
   }
@@ -2772,7 +2776,7 @@ TEST_F(ClientTest, TestScannerKeepAlive) {
   }
 
   ASSERT_TRUE(scanner.HasMoreRows());
-  for (int i = 0; i < 5; i++) {
+  for (int i = 0; i < 15; i++) {
     SleepFor(MonoDelta::FromMilliseconds(50));
     ASSERT_OK(scanner.KeepAlive());
   }
@@ -2932,6 +2936,24 @@ static void DoTestVerifyRows(const shared_ptr<KuduTable>& tbl, int num_rows) {
   }
 }
 
+static void DoVerifyMetrics(const KuduSession* session,
+                            int64_t successful_inserts,
+                            int64_t insert_ignore_errors,
+                            int64_t successful_upserts,
+                            int64_t successful_updates,
+                            int64_t update_ignore_errors,
+                            int64_t successful_deletes,
+                            int64_t delete_ignore_errors) {
+  auto metrics = session->GetWriteOpMetrics().Get();
+  ASSERT_EQ(successful_inserts, metrics["successful_inserts"]);
+  ASSERT_EQ(insert_ignore_errors, metrics["insert_ignore_errors"]);
+  ASSERT_EQ(successful_upserts, metrics["successful_upserts"]);
+  ASSERT_EQ(successful_updates, metrics["successful_updates"]);
+  ASSERT_EQ(update_ignore_errors, metrics["update_ignore_errors"]);
+  ASSERT_EQ(successful_deletes, metrics["successful_deletes"]);
+  ASSERT_EQ(delete_ignore_errors, metrics["delete_ignore_errors"]);
+}
+
 TEST_F(ClientTest, TestInsertIgnore) {
   shared_ptr<KuduSession> session = client_->NewSession();
   session->SetTimeoutMillis(10000);
@@ -2941,6 +2963,7 @@ TEST_F(ClientTest, TestInsertIgnore) {
     unique_ptr<KuduInsert> insert(BuildTestInsert(client_table_.get(), 1));
     ASSERT_OK(session->Apply(insert.release()));
     DoTestVerifyRows(client_table_, 1);
+    DoVerifyMetrics(session.get(), 1, 0, 0, 0, 0, 0, 0);
   }
 
   {
@@ -2948,6 +2971,7 @@ TEST_F(ClientTest, TestInsertIgnore) {
     unique_ptr<KuduInsertIgnore> insert_ignore(BuildTestInsertIgnore(client_table_.get(), 1));
     ASSERT_OK(session->Apply(insert_ignore.release()));
     DoTestVerifyRows(client_table_, 1);
+    DoVerifyMetrics(session.get(), 1, 1, 0, 0, 0, 0, 0);
   }
 
   {
@@ -2959,6 +2983,7 @@ TEST_F(ClientTest, TestInsertIgnore) {
     ASSERT_OK(insert_ignore->mutable_row()->SetInt32("non_null_with_default", 999));
     ASSERT_OK(session->Apply(insert_ignore.release())); // returns ok but results in no change
     DoTestVerifyRows(client_table_, 1);
+    DoVerifyMetrics(session.get(), 1, 2, 0, 0, 0, 0, 0);
   }
 
   {
@@ -2966,6 +2991,7 @@ TEST_F(ClientTest, TestInsertIgnore) {
     unique_ptr<KuduInsertIgnore> insert_ignore(BuildTestInsertIgnore(client_table_.get(), 2));
     ASSERT_OK(session->Apply(insert_ignore.release()));
     DoTestVerifyRows(client_table_, 2);
+    DoVerifyMetrics(session.get(), 2, 2, 0, 0, 0, 0, 0);
   }
 }
 
@@ -2979,12 +3005,14 @@ TEST_F(ClientTest, TestUpdateIgnore) {
     unique_ptr<KuduUpdateIgnore> update_ignore(BuildTestUpdateIgnore(client_table_.get(), 1));
     ASSERT_OK(session->Apply(update_ignore.release()));
     DoTestVerifyRows(client_table_, 0);
+    DoVerifyMetrics(session.get(), 0, 0, 0, 0, 1, 0, 0);
   }
 
   {
     unique_ptr<KuduInsert> insert(BuildTestInsert(client_table_.get(), 1));
     ASSERT_OK(session->Apply(insert.release()));
     DoTestVerifyRows(client_table_, 1);
+    DoVerifyMetrics(session.get(), 1, 0, 0, 0, 1, 0, 0);
   }
 
   {
@@ -2995,6 +3023,7 @@ TEST_F(ClientTest, TestUpdateIgnore) {
     ASSERT_OK(update_ignore->mutable_row()->SetStringCopy("string_val", "hello world"));
     ASSERT_OK(update_ignore->mutable_row()->SetInt32("non_null_with_default", 999));
     ASSERT_OK(session->Apply(update_ignore.release()));
+    DoVerifyMetrics(session.get(), 1, 0, 0, 1, 1, 0, 0);
 
     vector<string> rows;
     KuduScanner scanner(client_table_.get());
@@ -3014,6 +3043,7 @@ TEST_F(ClientTest, TestDeleteIgnore) {
     unique_ptr<KuduInsert> insert(BuildTestInsert(client_table_.get(), 1));
     ASSERT_OK(session->Apply(insert.release()));
     DoTestVerifyRows(client_table_, 1);
+    DoVerifyMetrics(session.get(), 1, 0, 0, 0, 0, 0, 0);
   }
 
   {
@@ -3021,6 +3051,7 @@ TEST_F(ClientTest, TestDeleteIgnore) {
     unique_ptr<KuduDeleteIgnore> delete_ignore(BuildTestDeleteIgnore(client_table_.get(), 1));
     ASSERT_OK(session->Apply(delete_ignore.release()));
     DoTestVerifyRows(client_table_, 0);
+    DoVerifyMetrics(session.get(), 1, 0, 0, 0, 0, 1, 0);
   }
 
   {
@@ -3028,6 +3059,7 @@ TEST_F(ClientTest, TestDeleteIgnore) {
     unique_ptr<KuduDeleteIgnore> delete_ignore(BuildTestDeleteIgnore(client_table_.get(), 1));
     ASSERT_OK(session->Apply(delete_ignore.release()));
     DoTestVerifyRows(client_table_, 0);
+    DoVerifyMetrics(session.get(), 1, 0, 0, 0, 0, 1, 1);
   }
 }
 
@@ -3300,7 +3332,7 @@ TEST_F(ClientTest, TestSessionClose) {
 // contains multiple rows spread across multiple tablets.
 TEST_F(ClientTest, TestMultipleMultiRowManualBatches) {
   shared_ptr<KuduTable> second_table;
-  NO_FATALS(CreateTable("second table", 1, {}, {}, &second_table));
+  ASSERT_OK(CreateTable("second table", 1, {}, {}, &second_table));
 
   shared_ptr<KuduSession> session = client_->NewSession();
   ASSERT_OK(session->SetFlushMode(KuduSession::MANUAL_FLUSH));
@@ -3538,7 +3570,7 @@ TEST_F(ClientTest, TestInsertDuplicateKeys) {
 
   constexpr const char* kTable2Name = "client-testtb2";
   shared_ptr<KuduTable> second_table;
-  NO_FATALS(CreateTable(kTable2Name, 1, {}, {}, &second_table));
+  ASSERT_OK(CreateTable(kTable2Name, 1, {}, {}, &second_table));
 
   // Insert initial rows
   ASSERT_OK(ApplyInsertToSession(session.get(), client_table_, 1, 1, "one"));
@@ -3684,7 +3716,7 @@ TEST_F(ClientTest, TestCheckMutationBufferSpaceLimitInEffect) {
     ASSERT_OK(session->SetMutationBufferSpace(kBufferSizeBytes));
     s = ApplyInsertToSession(
           session.get(), client_table_, 0, 1, kLongString.c_str());
-    ASSERT_TRUE(s.IsIncomplete()) << "Got unexpected status: " << s.ToString();
+    ASSERT_TRUE(s.IsIncomplete()) << s.ToString();
     EXPECT_FALSE(session->HasPendingOperations());
     vector<KuduError*> errors;
     ElementDeleter deleter(&errors);
@@ -3798,7 +3830,7 @@ TEST_F(ClientTest, TestSetSessionMutationBufferMaxNum) {
   ASSERT_EQ(0, session->CountPendingErrors());
   ASSERT_TRUE(session->HasPendingOperations());
   Status s = session->SetMutationBufferMaxNum(3);
-  ASSERT_TRUE(s.IsIllegalState());
+  ASSERT_TRUE(s.IsIllegalState()) << s.ToString();
   ASSERT_STR_CONTAINS(s.ToString(),
                       "Cannot change the limit on maximum number of batchers");
   ASSERT_OK(session->Flush());
@@ -4008,7 +4040,7 @@ TEST_F(ClientTest, TestAutoFlushBackgroundAndErrorCollector) {
     // the crux of the race condition for KUDU-1743.
     const string table_name = Substitute("table.$0", i);
     shared_ptr<KuduTable> table;
-    NO_FATALS(CreateTable(table_name, 3, std::move(splits), {}, &table));
+    ASSERT_OK(CreateTable(table_name, 3, std::move(splits), {}, &table));
 
     shared_ptr<KuduSession> session(client_->NewSession());
     scoped_refptr<ErrorCollector> ec(new CustomErrorCollector);
@@ -4434,6 +4466,7 @@ TEST_F(ClientTest, TestUpsert) {
   // Perform and verify UPSERT which acts as an INSERT.
   ASSERT_OK(ApplyUpsertToSession(session.get(), client_table_, 1, 1, "original row"));
   FlushSessionOrDie(session);
+  DoVerifyMetrics(session.get(), 0, 0, 1, 0, 0, 0, 0);
 
   {
     vector<string> rows;
@@ -4446,6 +4479,7 @@ TEST_F(ClientTest, TestUpsert) {
   // Perform and verify UPSERT which acts as an UPDATE.
   ASSERT_OK(ApplyUpsertToSession(session.get(), client_table_, 1, 2, "upserted row"));
   FlushSessionOrDie(session);
+  DoVerifyMetrics(session.get(), 0, 0, 2, 0, 0, 0, 0);
 
   {
     vector<string> rows;
@@ -4464,6 +4498,7 @@ TEST_F(ClientTest, TestUpsert) {
     ASSERT_OK(row->SetInt32("non_null_with_default", 999));
     ASSERT_OK(session->Apply(update.release()));
     FlushSessionOrDie(session);
+    DoVerifyMetrics(session.get(), 0, 0, 2, 1, 0, 0, 0);
   }
   {
     vector<string> rows;
@@ -4477,6 +4512,7 @@ TEST_F(ClientTest, TestUpsert) {
   // column, and therefore should not revert it back to its default.
   ASSERT_OK(ApplyUpsertToSession(session.get(), client_table_, 1, 3, "upserted row 2"));
   FlushSessionOrDie(session);
+  DoVerifyMetrics(session.get(), 0, 0, 3, 1, 0, 0, 0);
   {
     vector<string> rows;
     ASSERT_OK(ScanTableToStrings(client_table_.get(), &rows));
@@ -4488,6 +4524,7 @@ TEST_F(ClientTest, TestUpsert) {
   // Delete the row.
   ASSERT_OK(ApplyDeleteToSession(session.get(), client_table_, 1));
   FlushSessionOrDie(session);
+  DoVerifyMetrics(session.get(), 0, 0, 3, 1, 0, 1, 0);
   {
     vector<string> rows;
     ASSERT_OK(ScanTableToStrings(client_table_.get(), &rows));
@@ -4505,7 +4542,7 @@ TEST_F(ClientTest, TestWriteWithBadColumn) {
   unique_ptr<KuduInsert> insert(table->NewInsert());
   ASSERT_OK(insert->mutable_row()->SetInt32("key", 12345));
   Status s = insert->mutable_row()->SetInt32("bad_col", 12345);
-  ASSERT_TRUE(s.IsNotFound());
+  ASSERT_TRUE(s.IsNotFound()) << s.ToString();
   ASSERT_STR_CONTAINS(s.ToString(), "No such column: bad_col");
 }
 
@@ -4559,7 +4596,7 @@ TEST_F(ClientTest, TestBasicAlterOperations) {
     unique_ptr<KuduTableAlterer> table_alterer(client_->NewTableAlterer(kTableName));
     table_alterer->RenameTo(bad_name);
     Status s = table_alterer->Alter();
-    ASSERT_TRUE(s.IsInvalidArgument());
+    ASSERT_TRUE(s.IsInvalidArgument()) << s.ToString();
     ASSERT_STR_CONTAINS(s.ToString(), "invalid table name");
   }
 
@@ -4581,7 +4618,7 @@ TEST_F(ClientTest, TestBasicAlterOperations) {
   {
     unique_ptr<KuduTableAlterer> table_alterer(client_->NewTableAlterer(kTableName));
     Status s = table_alterer->Alter();
-    ASSERT_TRUE(s.IsInvalidArgument());
+    ASSERT_TRUE(s.IsInvalidArgument()) << s.ToString();
     ASSERT_STR_CONTAINS(s.ToString(), "No alter steps provided");
   }
 
@@ -4600,7 +4637,7 @@ TEST_F(ClientTest, TestBasicAlterOperations) {
     Status s = table_alterer
       ->DropColumn("key")
       ->Alter();
-    ASSERT_TRUE(s.IsInvalidArgument());
+    ASSERT_TRUE(s.IsInvalidArgument()) << s.ToString();
     ASSERT_STR_CONTAINS(s.ToString(), "cannot remove a key column: key");
   }
 
@@ -4609,7 +4646,7 @@ TEST_F(ClientTest, TestBasicAlterOperations) {
     unique_ptr<KuduTableAlterer> table_alterer(client_->NewTableAlterer(kTableName));
     table_alterer->AlterColumn("int_val")->RenameTo("string_val");
     Status s = table_alterer->Alter();
-    ASSERT_TRUE(s.IsAlreadyPresent());
+    ASSERT_TRUE(s.IsAlreadyPresent()) << s.ToString();
     ASSERT_STR_CONTAINS(s.ToString(), "The column already exists: string_val");
   }
 
@@ -4618,7 +4655,7 @@ TEST_F(ClientTest, TestBasicAlterOperations) {
     unique_ptr<KuduTableAlterer> table_alterer(client_->NewTableAlterer(kTableName));
     table_alterer->AlterColumn("string_val");
     Status s = table_alterer->Alter();
-    ASSERT_TRUE(s.IsInvalidArgument());
+    ASSERT_TRUE(s.IsInvalidArgument()) << s.ToString();
     ASSERT_STR_CONTAINS(s.ToString(), "no alter operation specified: string_val");
   }
 
@@ -4627,7 +4664,7 @@ TEST_F(ClientTest, TestBasicAlterOperations) {
     unique_ptr<KuduTableAlterer> table_alterer(client_->NewTableAlterer(kTableName));
     table_alterer->AlterColumn("string_val")->Type(KuduColumnSchema::STRING);
     Status s = table_alterer->Alter();
-    ASSERT_TRUE(s.IsNotSupported());
+    ASSERT_TRUE(s.IsNotSupported()) << s.ToString();
     ASSERT_STR_CONTAINS(s.ToString(), "unsupported alter operation: string_val");
   }
 
@@ -4636,7 +4673,7 @@ TEST_F(ClientTest, TestBasicAlterOperations) {
     unique_ptr<KuduTableAlterer> table_alterer(client_->NewTableAlterer(kTableName));
     table_alterer->AlterColumn("string_val")->Nullable();
     Status s = table_alterer->Alter();
-    ASSERT_TRUE(s.IsNotSupported());
+    ASSERT_TRUE(s.IsNotSupported()) << s.ToString();
     ASSERT_STR_CONTAINS(s.ToString(), "unsupported alter operation: string_val");
   }
 
@@ -4645,7 +4682,7 @@ TEST_F(ClientTest, TestBasicAlterOperations) {
     unique_ptr<KuduTableAlterer> table_alterer(client_->NewTableAlterer(kTableName));
     table_alterer->AlterColumn("string_val")->NotNull();
     Status s = table_alterer->Alter();
-    ASSERT_TRUE(s.IsNotSupported());
+    ASSERT_TRUE(s.IsNotSupported()) << s.ToString();
     ASSERT_STR_CONTAINS(s.ToString(), "unsupported alter operation: string_val");
   }
 
@@ -4669,7 +4706,7 @@ TEST_F(ClientTest, TestBasicAlterOperations) {
     table_alterer->AddColumn("new_string_val")->Type(KuduColumnSchema::STRING)
       ->Encoding(KuduColumnStorageAttributes::GROUP_VARINT);
     Status s = table_alterer->Alter();
-    ASSERT_TRUE(s.IsNotSupported());
+    ASSERT_TRUE(s.IsNotSupported()) << s.ToString();
     ASSERT_STR_CONTAINS(s.ToString(), "encoding GROUP_VARINT not supported for type BINARY");
     ASSERT_EQ(1, tablet_replica->tablet()->metadata()->schema_version());
   }
@@ -4709,7 +4746,7 @@ TEST_F(ClientTest, TestBasicAlterOperations) {
         ->Default(KuduValue::CopyString("hello!"));
     ASSERT_OK(table_alterer->Alter());
     ASSERT_EQ(4, tablet_replica->tablet()->metadata()->schema_version());
-    Schema schema = tablet_replica->tablet()->metadata()->schema();
+    Schema schema = *tablet_replica->tablet()->metadata()->schema();
     ColumnSchema col_schema = schema.column(schema.find_column("string_val"));
     ASSERT_FALSE(col_schema.has_read_default());
     ASSERT_TRUE(col_schema.has_write_default());
@@ -4723,7 +4760,7 @@ TEST_F(ClientTest, TestBasicAlterOperations) {
         ->Default(KuduValue::FromInt(54321));
     ASSERT_OK(table_alterer->Alter());
     ASSERT_EQ(5, tablet_replica->tablet()->metadata()->schema_version());
-    Schema schema = tablet_replica->tablet()->metadata()->schema();
+    Schema schema = *tablet_replica->tablet()->metadata()->schema();
     ColumnSchema col_schema = schema.column(schema.find_column("non_null_with_default"));
     ASSERT_TRUE(col_schema.has_read_default()); // Started with a default
     ASSERT_TRUE(col_schema.has_write_default());
@@ -4737,7 +4774,7 @@ TEST_F(ClientTest, TestBasicAlterOperations) {
         ->RemoveDefault();
     ASSERT_OK(table_alterer->Alter());
     ASSERT_EQ(6, tablet_replica->tablet()->metadata()->schema_version());
-    Schema schema = tablet_replica->tablet()->metadata()->schema();
+    Schema schema = *tablet_replica->tablet()->metadata()->schema();
     ColumnSchema col_schema = schema.column(schema.find_column("string_val"));
     ASSERT_FALSE(col_schema.has_read_default());
     ASSERT_FALSE(col_schema.has_write_default());
@@ -4750,7 +4787,7 @@ TEST_F(ClientTest, TestBasicAlterOperations) {
         ->RemoveDefault();
     ASSERT_OK(table_alterer->Alter());
     ASSERT_EQ(7, tablet_replica->tablet()->metadata()->schema_version());
-    Schema schema = tablet_replica->tablet()->metadata()->schema();
+    Schema schema = *tablet_replica->tablet()->metadata()->schema();
     ColumnSchema col_schema = schema.column(schema.find_column("non_null_with_default"));
     ASSERT_TRUE(col_schema.has_read_default());
     ASSERT_FALSE(col_schema.has_write_default());
@@ -4765,7 +4802,7 @@ TEST_F(ClientTest, TestBasicAlterOperations) {
     table_alterer->AlterColumn("non_null_with_default")
         ->Default(KuduValue::CopyString("aaa"));
     Status s = table_alterer->Alter();
-    ASSERT_TRUE(s.IsInvalidArgument());
+    ASSERT_TRUE(s.IsInvalidArgument()) << s.ToString();
     ASSERT_STR_CONTAINS(s.ToString(), "wrong size for default value");
     ASSERT_EQ(7, tablet_replica->tablet()->metadata()->schema_version());
   }
@@ -4779,7 +4816,7 @@ TEST_F(ClientTest, TestBasicAlterOperations) {
         ->BlockSize(16 * 1024 * 1024);
     ASSERT_OK(table_alterer->Alter());
     ASSERT_EQ(8, tablet_replica->tablet()->metadata()->schema_version());
-    Schema schema = tablet_replica->tablet()->metadata()->schema();
+    Schema schema = *tablet_replica->tablet()->metadata()->schema();
     ColumnSchema col_schema = schema.column(schema.find_column("string_val"));
     ASSERT_EQ(KuduColumnStorageAttributes::PLAIN_ENCODING, col_schema.attributes().encoding);
     ASSERT_EQ(KuduColumnStorageAttributes::LZ4, col_schema.attributes().compression);
@@ -4900,12 +4937,12 @@ TEST_F(ClientTest, TestDeleteTable) {
 
   // Try to open the deleted table
   Status s = client_->OpenTable(kTableName, &client_table_);
-  ASSERT_TRUE(s.IsNotFound());
+  ASSERT_TRUE(s.IsNotFound()) << s.ToString();
   ASSERT_STR_CONTAINS(s.ToString(), "the table does not exist");
 
   // Create a new table with the same name. This is to ensure that the client
   // doesn't cache anything inappropriately by table name (see KUDU-1055).
-  NO_FATALS(CreateTable(kTableName, 1, GenerateSplitRows(), {}, &client_table_));
+  ASSERT_OK(CreateTable(kTableName, 1, GenerateSplitRows(), {}, &client_table_));
 
   // Should be able to insert successfully into the new table.
   NO_FATALS(InsertTestRows(client_.get(), client_table_.get(), 10));
@@ -4936,7 +4973,7 @@ TEST_F(ClientTest, TestReplicatedMultiTabletTable) {
   const int kNumReplicas = 3;
 
   shared_ptr<KuduTable> table;
-  NO_FATALS(CreateTable(kReplicatedTable,
+  ASSERT_OK(CreateTable(kReplicatedTable,
                         kNumReplicas,
                         GenerateSplitRows(),
                         {},
@@ -4962,7 +4999,7 @@ TEST_F(ClientTest, TestReplicatedMultiTabletTableFailover) {
   const int kNumTries = 100;
 
   shared_ptr<KuduTable> table;
-  NO_FATALS(CreateTable(kReplicatedTable,
+  ASSERT_OK(CreateTable(kReplicatedTable,
                         kNumReplicas,
                         GenerateSplitRows(),
                         {},
@@ -5016,7 +5053,7 @@ TEST_F(ClientTest, TestReplicatedTabletWritesWithLeaderElection) {
   const int kNumReplicas = 3;
 
   shared_ptr<KuduTable> table;
-  NO_FATALS(CreateTable(kReplicatedTable, kNumReplicas, {}, {}, &table));
+  ASSERT_OK(CreateTable(kReplicatedTable, kNumReplicas, {}, {}, &table));
 
   // Insert some data.
   NO_FATALS(InsertTestRows(table.get(), kNumRowsToWrite));
@@ -5401,7 +5438,7 @@ TEST_F(ClientTest, TestCreateTableWithTooManyTablets) {
       .num_replicas(3)
       .Create();
 #pragma GCC diagnostic pop
-  ASSERT_TRUE(s.IsInvalidArgument());
+  ASSERT_TRUE(s.IsInvalidArgument()) << s.ToString();
   ASSERT_STR_CONTAINS(s.ToString(),
                       "the requested number of tablet replicas is over the "
                       "maximum permitted at creation time (3)");
@@ -5768,7 +5805,7 @@ TEST_F(ClientTest, TestReadAtSnapshotNoTimestampSet) {
       CHECK_OK(row->SetInt32(0, i * kRowsPerTablet));
       rows.push_back(std::move(row));
     }
-    NO_FATALS(CreateTable("test_table", 1, std::move(rows), {}, &table));
+    ASSERT_OK(CreateTable("test_table", 1, std::move(rows), {}, &table));
     // Insert some data into the table, so each tablet would get populated.
     shared_ptr<KuduSession> session(client_->NewSession());
     ASSERT_OK(session->SetFlushMode(KuduSession::MANUAL_FLUSH));
@@ -6368,7 +6405,7 @@ TEST_F(ClientTest, TestNoDefaultPartitioning) {
     unique_ptr<KuduTableCreator> table_creator(client_->NewTableCreator());
     Status s = table_creator->table_name("TestNoDefaultPartitioning").schema(&schema_).Create();
 
-    ASSERT_TRUE(s.IsInvalidArgument());
+    ASSERT_TRUE(s.IsInvalidArgument()) << s.ToString();
     ASSERT_STR_CONTAINS(s.ToString(), "Table partitioning must be specified");
 }
 
@@ -6483,7 +6520,7 @@ TEST_F(ClientTest, TestBatchScanConstIterator) {
 TEST_F(ClientTest, TestTableNumReplicas) {
   for (int i : { 1, 3, 5, 7 }) {
     shared_ptr<KuduTable> table;
-    NO_FATALS(CreateTable(Substitute("table_with_$0_replicas", i),
+    ASSERT_OK(CreateTable(Substitute("table_with_$0_replicas", i),
                           i, {}, {}, &table));
     ASSERT_EQ(i, table->num_replicas());
   }
@@ -6972,7 +7009,7 @@ TEST_F(ClientTest, TestBlockScannerHijackingAttempts) {
     bad_guy_scanner.data_->last_response_.set_has_more_results(true);
     KuduScanBatch batch;
     Status s = bad_guy_scanner.NextBatch(&batch);
-    ASSERT_TRUE(s.IsRemoteError());
+    ASSERT_TRUE(s.IsRemoteError()) << s.ToString();
     ASSERT_STR_CONTAINS(s.ToString(), "Not authorized");
     ASSERT_EQ(0, batch.NumRows());
   }

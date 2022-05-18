@@ -344,7 +344,7 @@ Status AutoRebalancerTask::GetMovesUsingRebalancingAlgo(
   vector<Rebalancer::ReplicaMove> rep_moves;
   for (const auto& move : moves) {
     vector<string> tablet_ids;
-    Rebalancer::FindReplicas(move, raw_info, &tablet_ids);
+    rebalancer_.FindReplicas(move, raw_info, &tablet_ids);
     if (cross_location == CrossLocations::YES) {
       // In case of cross-location (a.k.a. inter-location) rebalancing it is
       // necessary to make sure the majority of replicas would not end up
@@ -488,7 +488,7 @@ Status AutoRebalancerTask::BuildClusterRawInfo(
   {
     CatalogManager::ScopedLeaderSharedLock leader_lock(catalog_manager_);
     RETURN_NOT_OK(leader_lock.first_failed_status());
-    RETURN_NOT_OK(catalog_manager_->GetAllTables(&table_infos));
+    catalog_manager_->GetAllTables(&table_infos);
   }
 
   table_summaries.reserve(table_infos.size());
