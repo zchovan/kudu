@@ -96,7 +96,7 @@ Status MiniRangerKMS::CreateConfigs(const std::string& conf_dir) {
     JoinPathSegments(kms_home, "install.properties")));
 
   RETURN_NOT_OK(WriteStringToFile(
-          env_, GetRangerKMSSiteXml(host_, port_, conf_dir),
+          env_, GetRangerKMSSiteXml(host_, port_, JoinPathSegments(kms_home, "ews/webapp"), conf_dir),
           JoinPathSegments(kms_home, "ranger-kms-site.xml")));
 
   RETURN_NOT_OK(WriteStringToFile(
@@ -118,10 +118,10 @@ Status MiniRangerKMS::CreateConfigs(const std::string& conf_dir) {
           JoinPathSegments(kms_home, "kms-site.xml")
           ));
 
-  RETURN_NOT_OK(WriteStringToFile(
+  /*RETURN_NOT_OK(WriteStringToFile(
           env_, GetRangerKMSAuditXml(),
           JoinPathSegments(kms_home, "ranger-kms-audit.xml")
-          ));
+          ));*/
 
   RETURN_NOT_OK(WriteStringToFile(
           env_, GetRangerKMSPolicymgrSSLXml(),
@@ -138,17 +138,19 @@ Status MiniRangerKMS::CreateConfigs(const std::string& conf_dir) {
 Status MiniRangerKMS::DbSetup(const std::string &kms_home, const std::string &ews_dir,
                               const std::string &web_app_dir) {
   RETURN_NOT_OK(env_->CreateDir(ews_dir));
-  RETURN_NOT_OK(env_->CreateDir(web_app_dir));
-//  RETURN_NOT_OK(env_->CreateSymLink(JoinPathSegments(ranger_kms_home_, "ews/webapp"),
-//                                    web_app_dir));
-  // copy everything from thirdparty to proc dir
-  WritableFileOptions opts;
-  opts.sync_on_close = true;
-  RETURN_NOT_OK(env_util::CopyDirectory(env_, JoinPathSegments(ranger_kms_home_, "ews/webapp"), web_app_dir, opts ));
+  RETURN_NOT_OK(env_util::CopyDirectory(env_, JoinPathSegments(ranger_kms_home_, "ews/webapp"),
+                                        web_app_dir, WritableFileOptions()));
+  RETURN_NOT_OK(env_->CreateSymLink(JoinPathSegments(ranger_kms_home_, "jisql"),
+                                    JoinPathSegments(kms_home, "jisql")));
+  RETURN_NOT_OK(env_->CreateSymLink(JoinPathSegments(ranger_kms_home_, "db"),
+                                    JoinPathSegments(kms_home, "db")));
+  RETURN_NOT_OK(env_->CreateSymLink(JoinPathSegments(ranger_kms_home_, "cred"),
+                                    JoinPathSegments(kms_home, "cred")));
+
+  RETURN_NOT_OK(env_->DeleteRecursively(JoinPathSegments(web_app_dir, "WEB-INF/classes/conf")));
+  RETURN_NOT_OK(env_->CreateDir(JoinPathSegments(web_app_dir, "WEB-INF/classes/conf")));
+  RETURN_NOT_OK(env_util::CopyFile(env_, JoinPathSegments(kms_home, "kms-site.xml"), JoinPathSegments(web_app_dir, "WEB-INF/classes/conf/kms-site.xml"), WritableFileOptions()));
   // replace conf files in proc dir from kms home dir
-
-
-
   Subprocess db_setup(
         { "python", JoinPathSegments(ranger_kms_home_, "db_setup.py")});
 

@@ -74,6 +74,7 @@ KMS_BLACKLIST_DECRYPT_EEK=hdfs)";
 
 inline std::string GetRangerKMSSiteXml(const std::string& kms_host,
                                        uint16_t kms_port,
+                                       const std::string& webapp_dir,
                                        const std::string& conf_dir) {
   const char* kRangerKMSSiteXmlTemplate = R"(
 <configuration>
@@ -95,7 +96,7 @@ inline std::string GetRangerKMSSiteXml(const std::string& kms_host,
 	</property>
 	<property>
 		<name>xa.webapp.dir</name>
-		<value>ranger_kms-home/ews/webapp</value>
+		<value>$2</value>
 	</property>
 	<property>
 		<name>ranger.service.https.attrib.ssl.enabled</name>
@@ -131,10 +132,10 @@ inline std::string GetRangerKMSSiteXml(const std::string& kms_host,
 	</property>
   <property>
     <name>kms.config.dir</name>
-    <value>$2</value>
+    <value>$3</value>
   </property>
 </configuration>)";
-  return strings::Substitute(kRangerKMSSiteXmlTemplate, kms_host, kms_port, conf_dir);
+  return strings::Substitute(kRangerKMSSiteXmlTemplate, kms_host, kms_port, webapp_dir, conf_dir);
 }
 
 inline std::string GetRangerKMSDbksSiteXml(const std::string pg_host, const uint16_t pg_port, const std::string& pg_driver) {

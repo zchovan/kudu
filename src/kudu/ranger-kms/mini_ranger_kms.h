@@ -107,12 +107,12 @@ class MiniRangerKMS {
       return strings::Substitute(
               "$0:$1:$2:$3:$4",
 //              JoinPathSegments(kms_home, "ews/webapp/WEB-INF/classes/conf/*"),
+              kms_home,
               JoinPathSegments(bin_dir(), "postgresql.jar"),
               JoinPathSegments(ranger_kms_home_, "ews/webapp/WEB-INF/classes/lib/*"),
               JoinPathSegments(ranger_kms_home_, "ews/webapp/lib/*"),
               JoinPathSegments(java_home_, "lib/*"),
-              JoinPathSegments(hadoop_home_, "conf/*"),
-              kms_home);
+              JoinPathSegments(hadoop_home_, "conf"));
     }
     // Directory in which to put all our stuff.
     const std::string data_root_;

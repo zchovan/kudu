@@ -309,13 +309,14 @@ Status ExternalMiniCluster::Start() {
   }
 #endif // #if !defined(NO_CHRONY) ...
 
+  if (opts_.enable_ranger || opts_.enable_ranger_kms) {
+    if (!postgres_ || !postgres_->isRunning()) {
+      postgres_.reset(new postgres::MiniPostgres(cluster_root(), GetBindIpForExternalServer(0)));
+    }
+  }
+
   if (opts_.enable_ranger) {
     string host = GetBindIpForExternalServer(0);
-    if (postgres_->firstRun()) {
-      postgres_.reset(new postgres::MiniPostgres(cluster_root(), host));
-    }
-    RETURN_NOT_OK_PREPEND(postgres_->Start(), "Could not start Postgres for Ranger");
-
     ranger_.reset(new ranger::MiniRanger(cluster_root(), host, postgres_));
     if (opts_.enable_kerberos) {
 
@@ -348,7 +349,6 @@ Status ExternalMiniCluster::Start() {
                           "Failed to write Ranger client config");
   }
   if (opts_.enable_ranger_kms) {
-
     if (opts_.enable_kerberos) {
       // handle kerberos
     }
