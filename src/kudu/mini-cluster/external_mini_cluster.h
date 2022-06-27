@@ -41,6 +41,7 @@
 #include "kudu/util/monotime.h"
 #include "kudu/util/net/net_util.h"
 #include "kudu/util/status.h"
+#include "kudu/ranger-kms/mini_ranger_kms.h"
 //#include "kudu/ranger-kms/mini_ranger_kms.h"
 
 namespace kudu {

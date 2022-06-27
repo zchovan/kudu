@@ -362,10 +362,14 @@ Status ExternalMiniCluster::Start() {
                                                                        "ranger-client")),
                           "Failed to write Ranger client config");
   }
+
   if (opts_.enable_ranger_kms) {
+    string host = GetBindIpForExternalServer(0);
+    ranger_kms_.reset(new ranger_kms::MiniRangerKMS(cluster_root(), host, postgres_));
     if (opts_.enable_kerberos) {
       // handle kerberos
     }
+    RETURN_NOT_OK_PREPEND(ranger_kms_->Start(), "Failed to start the Ranger KMS service");
   }
 
   // Start the HMS.
