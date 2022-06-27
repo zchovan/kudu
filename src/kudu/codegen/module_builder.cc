@@ -125,7 +125,7 @@ string ToString(const Module& m) {
 // This method is needed for the implicit conversion from
 // llvm::StringRef to std::string
 string ToString(const Function* f) {
-  return f->getName().str();
+  return f->getName();
 }
 
 bool ModuleContains(const Module& m, const Function* fptr) {
@@ -379,7 +379,7 @@ TargetMachine* ModuleBuilder::GetTargetMachine() const {
 unordered_set<string> ModuleBuilder::GetFunctionNames() const {
   unordered_set<string> ret;
   for (const JITFuture& fut : futures_) {
-    ret.insert(CHECK_NOTNULL(fut.llvm_f_)->getName().str());
+    ret.insert(CHECK_NOTNULL(fut.llvm_f_)->getName());
   }
   return ret;
 }
