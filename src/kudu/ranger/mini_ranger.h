@@ -145,7 +145,7 @@ private:
   // Creates a Kudu service in Ranger.
   Status CreateKuduService() WARN_UNUSED_RESULT;
 
-  // Returns Ranger admin's home directory.
+    // Returns Ranger admin's home directory.
   std::string ranger_admin_home() const {
     return JoinPathSegments(data_root_, "ranger-admin");
   }

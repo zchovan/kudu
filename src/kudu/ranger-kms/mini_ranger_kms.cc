@@ -67,10 +67,10 @@ Status MiniRangerKMS::InitRangerKMS(std::string kms_home, bool *fresh_install) {
 
   RETURN_NOT_OK(env_->CreateDir(kms_home));
 
-  RETURN_NOT_OK(mini_pg_->AddUser("minirangerkms", /*super=*/false));
+  RETURN_NOT_OK(mini_pg_->AddUser("rangerkms", /*super=*/false));
   LOG(INFO) << "Created minirangerkms Postgres user";
 
-  RETURN_NOT_OK(mini_pg_->CreateDb("rangerkms", "minirangerkms"));
+  RETURN_NOT_OK(mini_pg_->CreateDb("rangerkms", "rangerkms"));
   LOG(INFO) << "Created rangerkms Postgres database";
 
   return Status::OK();
@@ -150,6 +150,13 @@ Status MiniRangerKMS::DbSetup(const std::string &kms_home, const std::string &ew
   RETURN_NOT_OK(env_->DeleteRecursively(JoinPathSegments(web_app_dir, "WEB-INF/classes/conf")));
   RETURN_NOT_OK(env_->CreateDir(JoinPathSegments(web_app_dir, "WEB-INF/classes/conf")));
   RETURN_NOT_OK(env_util::CopyFile(env_, JoinPathSegments(kms_home, "kms-site.xml"), JoinPathSegments(web_app_dir, "WEB-INF/classes/conf/kms-site.xml"), WritableFileOptions()));
+  RETURN_NOT_OK(env_util::CopyFile(env_, JoinPathSegments(kms_home, "dbks-site.xml"), JoinPathSegments(web_app_dir, "WEB-INF/classes/conf/dbks-site.xml"), WritableFileOptions()));
+  RETURN_NOT_OK(env_util::CopyFile(env_, JoinPathSegments(kms_home, "log4j.properties"), JoinPathSegments(web_app_dir, "WEB-INF/classes/conf/log4j.properties"), WritableFileOptions()));
+  RETURN_NOT_OK(env_util::CopyFile(env_, JoinPathSegments(kms_home, "ranger-kms-policymgr-ssl.xml"), JoinPathSegments(web_app_dir, "WEB-INF/classes/conf/ranger-kms-policymgr-ssl.xml"), WritableFileOptions()));
+  RETURN_NOT_OK(env_util::CopyFile(env_, JoinPathSegments(kms_home, "ranger-kms-security.xml"), JoinPathSegments(web_app_dir, "WEB-INF/classes/conf/ranger-kms-security.xml"), WritableFileOptions()));
+  RETURN_NOT_OK(env_util::CopyFile(env_, JoinPathSegments(kms_home, "ranger-kms-site.xml"), JoinPathSegments(web_app_dir, "WEB-INF/classes/conf/ranger-kms-site.xml"), WritableFileOptions()));
+  RETURN_NOT_OK(env_util::CopyFile(env_, JoinPathSegments(kms_home, "install.properties"), JoinPathSegments(web_app_dir, "WEB-INF/classes/conf/install.properties"), WritableFileOptions()));
+
   // replace conf files in proc dir from kms home dir
   Subprocess db_setup(
         { "python", JoinPathSegments(ranger_kms_home_, "db_setup.py")});
@@ -198,7 +205,7 @@ Status MiniRangerKMS::StartRangerKMS() {
 
     if (fresh_install) {
         RETURN_NOT_OK(DbSetup(kKMSHome, kEwsDir, kWebAppDir));
-//        RETURN_NOT_OK(CreateKMSService());
+        RETURN_NOT_OK_PREPEND(CreateKMSService(), "Unable to create KMS Service in Ranger");
     }
 
     string classpath = ranger_kms_classpath();
@@ -252,18 +259,21 @@ Status MiniRangerKMS::StartRangerKMS() {
 }
 
 Status MiniRangerKMS::CreateKMSService() {
+  string service_name = "kms";
   EasyJson service;
-  service.Set("name", "kmsdev");
-  service.Set("type", "kmsdev");
-  // The below config authorizes "kudu" to download the list of authorized users
-  // for policies and tags respectively.
-  EasyJson configs = service.Set("configs", EasyJson::kObject);
-  configs.Set("policy.download.auth.users", "kmsdev");
-  configs.Set("tag.download.auth.users", "kmsdev");
+  service.Set("name", service_name);
+  service.Set("type", service_name);
 
-          RETURN_NOT_OK_PREPEND(mini_ranger_->PostToRanger("service/plugins/services", service),
-                                "Failed to create KMS service");
-  LOG(INFO) << "Created KMS service";
+  EasyJson configs = service.Set("configs", EasyJson::kObject);
+  configs.Set("policy.download.auth.users", service_name);
+  configs.Set("tag.download.auth.users", service_name);
+  configs.Set("provider", ranger_kms_url_);
+  configs.Set("username", "rangerkms");
+  configs.Set("password", "rangerkms");
+
+  RETURN_NOT_OK_PREPEND(mini_ranger_->PostToRanger("service/plugins/services", service),
+                        Substitute("Failed to create $0 service", service_name));
+  LOG(INFO) << Substitute("Created $0 service", service_name);
   return Status::OK();
 }
 

@@ -50,12 +50,12 @@ db_ssl_enabled=false
 db_ssl_required=false
 db_ssl_verifyServerCertificate=false
 db_name=rangerkms
-db_user=minirangerkms
+db_user=rangerkms
 db_password=
 ranger_kms_http_enabled=true
 KMS_MASTER_KEY_PASSWD=Str0ngPassw0rd
 POLICY_MGR_URL=$3
-REPOSITORY_NAME=kmsdev
+REPOSITORY_NAME=kms
 XAAUDIT.SUMMARY.ENABLE=false
 XAAUDIT.ELASTICSEARCH.ENABLE=false
 XAAUDIT.HDFS.ENABLE=false
@@ -151,7 +151,7 @@ inline std::string GetRangerKMSDbksSiteXml(const std::string pg_host, const uint
   </property>
   <property>
     <name>ranger.db.encrypt.key.password</name>
-    <value>_</value>
+    <value>Str0ngPassw0rd</value>
     <description>
             Password used for encrypting Master Key
     </description>
@@ -387,7 +387,7 @@ inline std::string GetRangerKMSSecurityXml(const std::string& ranger_url, const 
 <?xml-stylesheet type="text/xsl" href="configuration.xsl"?><configuration xmlns:xi="http://www.w3.org/2001/XInclude">
 	<property>
 		<name>ranger.plugin.kms.service.name</name>
-		<value>kmsdev</value>
+		<value>kms</value>
 		<description>
 			Name of the Ranger service containing policies for this kms instance
 		</description>
