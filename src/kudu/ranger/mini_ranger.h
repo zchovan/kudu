@@ -120,7 +120,7 @@ class MiniRanger {
     return ranger_admin_url_;
   }
 
-  bool isRunning() const { return process_->IsStarted(); }
+  bool isRunning() const { return process_ && process_->IsStarted(); }
 
   // Sends a POST request to Ranger with 'payload'.
   Status PostToRanger(std::string url, EasyJson payload) WARN_UNUSED_RESULT;

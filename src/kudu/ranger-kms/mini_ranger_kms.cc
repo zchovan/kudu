@@ -39,8 +39,11 @@ namespace kudu {
 namespace ranger_kms {
 
 Status MiniRangerKMS::Start() {
-  RETURN_NOT_OK_PREPEND(mini_ranger_->Start(), "Failed to start Ranger");
-  LOG(INFO) << ">>>>RANGER STARTED<<<<<" << std::endl;
+//  if(!mini_ranger_->isRunning()) {
+//    LOG(INFO) << ">>>>STARTING RANGER<<<<<" << std::endl;
+//    RETURN_NOT_OK_PREPEND(mini_ranger_->Start(), "Failed to start Ranger");
+//    LOG(INFO) << ">>>>RANGER STARTED<<<<<" << std::endl;
+//  }
   return StartRangerKMS();
 }
 
@@ -114,14 +117,9 @@ Status MiniRangerKMS::CreateConfigs(const std::string& conf_dir) {
           ));
 
   RETURN_NOT_OK(WriteStringToFile(
-          env_, GetKMSSiteXml(),
+          env_, GetKMSSiteXml(kerberos_, ktpath_),
           JoinPathSegments(kms_home, "kms-site.xml")
           ));
-
-  /*RETURN_NOT_OK(WriteStringToFile(
-          env_, GetRangerKMSAuditXml(),
-          JoinPathSegments(kms_home, "ranger-kms-audit.xml")
-          ));*/
 
   RETURN_NOT_OK(WriteStringToFile(
           env_, GetRangerKMSPolicymgrSSLXml(),
@@ -130,10 +128,6 @@ Status MiniRangerKMS::CreateConfigs(const std::string& conf_dir) {
 
   return Status::OK();
 }
-//
-//Status MiniRangerKMS::SetupKeystores() {
-//
-//}
 
 Status MiniRangerKMS::DbSetup(const std::string &kms_home, const std::string &ews_dir,
                               const std::string &web_app_dir) {
@@ -228,7 +222,10 @@ Status MiniRangerKMS::StartRangerKMS() {
       Substitute("-Dlogdir=$0", JoinPathSegments(kKMSHome, "logs")),
     });
 
-    // @todo(zchovan): add kerberos
+    if (kerberos_) {
+      args.emplace_back(Substitute("-Djava.security.krb5.conf=$0", krb5_config_));
+    }
+
     args.emplace_back("-cp");
     args.emplace_back(classpath);
     args.emplace_back("org.apache.ranger.server.tomcat.EmbeddedServer");
@@ -277,11 +274,13 @@ Status MiniRangerKMS::CreateKMSService() {
   return Status::OK();
 }
 
-Status MiniRangerKMS::getKeys() {
+Status MiniRangerKMS::GetKeys() {
   EasyCurl curl;
   faststring response;
 
-  curl.FetchURL(Substitute("$0:$1/v1/key/names", host_, port_), &response);
+  LOG(INFO) << Substitute("fetching: $0:$1/kms/v1/keys/names", host_, port_) << std::endl;
+//  curl.set_auth(CurlAuthType::BASIC, "user1", "t1e2s3t4");
+  curl.FetchURL(Substitute("$0:$1/kms/v1/keys/names", host_, port_), &response);
   LOG(INFO) << "response: ";
   LOG(INFO) << response << std::endl;
 

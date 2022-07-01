@@ -39,6 +39,7 @@ target_link_libraries(mini_ranger_kms ${MINI_RANGER_KMS_DEPS})
 #######################################
 
 SET_KUDU_TEST_LINK_LIBS(
+        itest_util
         mini_postgres
         mini_ranger_kms)
 ADD_KUDU_TEST(mini_ranger_kms-test)

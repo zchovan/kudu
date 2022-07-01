@@ -37,21 +37,24 @@ namespace ranger_kms {
 class MiniRangerKMS {
   public:
     explicit MiniRangerKMS(std::string host,
-                           std::shared_ptr<postgres::MiniPostgres> mini_pg)
+                           std::shared_ptr<postgres::MiniPostgres> mini_pg,
+                           std::shared_ptr<ranger::MiniRanger> mini_ranger)
       : MiniRangerKMS(GetTestDataDirectory(),
                       std::move(host),
-                      std::move(mini_pg)) {}
+                      std::move(mini_pg),
+                      std::move(mini_ranger)) {}
 
     ~MiniRangerKMS();
 
     MiniRangerKMS(std::string data_root, std::string host,
-                  std::shared_ptr<postgres::MiniPostgres> mini_pg)
+                  std::shared_ptr<postgres::MiniPostgres> mini_pg,
+                  std::shared_ptr<ranger::MiniRanger> mini_ranger)
       : data_root_(std::move(data_root)),
         host_(std::move(host)),
         mini_pg_(std::move(mini_pg)),
+        mini_ranger_(std::move(mini_ranger)),
         env_(Env::Default()) {
           curl_.set_auth(CurlAuthType::BASIC, "admin", "admin");
-          mini_ranger_ = std::make_shared<ranger::MiniRanger>(host_, mini_pg_);
         }
 
     // Starts Ranger and its dependencies.
@@ -62,7 +65,16 @@ class MiniRangerKMS {
 
     Status CreateKMSService();
 
-    Status getKeys();
+    Status GetKeys();
+
+    void EnableKerberos(std::string krb5_config,
+                        std::string ktpath) {
+      kerberos_ = true;
+      krb5_config_ = std::move(krb5_config);
+      ktpath_ = std::move(ktpath);
+    }
+
+
 
   private:
     // Starts RangerKMS Service
@@ -131,6 +143,10 @@ class MiniRangerKMS {
     std::string hadoop_home_;
     std::string ranger_kms_home_;
     std::string java_home_;
+
+    bool kerberos_;
+    std::string krb5_config_;
+    std::string ktpath_;
 
     Env* env_;
     EasyCurl curl_;

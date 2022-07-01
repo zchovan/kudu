@@ -365,9 +365,15 @@ Status ExternalMiniCluster::Start() {
 
   if (opts_.enable_ranger_kms) {
     string host = GetBindIpForExternalServer(0);
-    ranger_kms_.reset(new ranger_kms::MiniRangerKMS(cluster_root(), host, postgres_));
+    ranger_kms_.reset(new ranger_kms::MiniRangerKMS(cluster_root(), host, postgres_, ranger_));
     if (opts_.enable_kerberos) {
-      // handle kerberos
+      string keytab;
+      RETURN_NOT_OK_PREPEND(kdc_->CreateServiceKeytab(
+      Substitute("rangerkms/$0@KRBTEST.COM", host),
+                  &keytab),
+                  "could not create rangeradmin keytab");
+
+      ranger_kms_->EnableKerberos(kdc_->GetEnvVars()["KRB5_CONFIG"], keytab);
     }
     RETURN_NOT_OK_PREPEND(ranger_kms_->Start(), "Failed to start the Ranger KMS service");
   }

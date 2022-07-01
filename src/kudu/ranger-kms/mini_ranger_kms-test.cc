@@ -21,9 +21,12 @@
 
 #include "kudu/util/test_macros.h"
 #include "kudu/util/test_util.h"
+#include "kudu/mini-cluster/external_mini_cluster.h"
 
 using kudu::postgres::MiniPostgres;
 using kudu::ranger::MiniRanger;
+using kudu::cluster::ExternalMiniCluster;
+using kudu::cluster::ExternalMiniClusterOptions;
 
 namespace kudu {
 namespace ranger_kms {
@@ -31,22 +34,47 @@ namespace ranger_kms {
 class MiniRangerKMSTest : public KuduTest {
   public:
     MiniRangerKMSTest()
-      : ranger_kms_("127.0.0.1",
-                    std::shared_ptr<MiniPostgres>(new MiniPostgres("127.0.0.1"))) {};
+      : mini_pg_(std::make_shared<MiniPostgres>("127.0.0.1")),
+      mini_ranger_(std::make_shared<MiniRanger>("127.0.0.1", mini_pg_)),
+      ranger_kms_("127.0.0.1", mini_pg_, mini_ranger_) {};
     void SetUp() override {
       ASSERT_OK(ranger_kms_.Start());
     }
 
   protected:
+    std::shared_ptr<MiniPostgres> mini_pg_;
+    std::shared_ptr<MiniRanger> mini_ranger_;
     MiniRangerKMS ranger_kms_;
 };
 
-TEST_F(MiniRangerKMSTest, DummyTest) {
-  ASSERT_TRUE(true);
+TEST_F(MiniRangerKMSTest, TestKMSStart) {
   LOG(INFO) << ">>> GETTING KEYS <<<";
-  Status status = ranger_kms_.getKeys();
+  Status status = ranger_kms_.GetKeys();
   KUDU_CHECK_OK(status);
 }
+
+class MiniRangerEMCTest : public KuduTest {
+  public:
+  void SetUp() override {
+    cluster_opts_.enable_kerberos = true;
+    cluster_opts_.enable_ranger = true;
+    cluster_opts_.enable_ranger_kms = true;
+
+    cluster_.reset(new ExternalMiniCluster(std::move(cluster_opts_)));
+    ASSERT_OK(cluster_->Start());
+  }
+
+  protected:
+    ExternalMiniClusterOptions cluster_opts_;
+    std::shared_ptr<ExternalMiniCluster> cluster_;
+};
+
+TEST_F(MiniRangerEMCTest, TestKMS) {
+  LOG(INFO) << ">>> GETTING KEYS <<<";
+  Status status = cluster_->ranger_kms()->GetKeys();
+  KUDU_CHECK_OK(status);
+}
+
 
 } // namespace ranger_kms
 } // namespace kudu

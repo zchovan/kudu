@@ -270,7 +270,7 @@ inline std::string GetRangerKMSDbksSiteXml(const std::string pg_host, const uint
   </property>
   <property>
   	<name>ranger.ks.kerberos.principal</name>
-  	<value>rangerkms/_HOST@REALM</value>
+  	<value>rangerkms/_HOST@KRBTEST.COM</value>
   </property>
   <property>
   	<name>ranger.ks.kerberos.keytab</name>
@@ -291,7 +291,7 @@ inline std::string GetRangerKMSDbksSiteXml(const std::string pg_host, const uint
     <value>safenetmasterkey</value>
     <description>Safenet key secure master key name</description>
   </property>
-    <property>
+  <property>
     <name>ranger.kms.keysecure.login.username</name>
     <value>user1</value>
     <description>Safenet key secure username</description>
@@ -446,7 +446,7 @@ inline std::string GetRangerKMSSecurityXml(const std::string& ranger_url, const 
   return strings::Substitute(kRangerKmsSecurityXmlTemplate, ranger_url, kms_home, kms_home);
 }
 
-inline std::string GetKMSSiteXml() {
+inline std::string GetKMSSiteXml(bool secure, const std::string& keytab) {
   const char *kmsSiteXml = R"(
   <configuration>
 
@@ -517,7 +517,7 @@ inline std::string GetKMSSiteXml() {
 
   <property>
     <name>hadoop.kms.authentication.type</name>
-    <value>simple</value>
+    <value>$0</value>
     <description>
       Authentication type for the KMS. Can be either &quot;simple&quot;
       or &quot;kerberos&quot;.
@@ -526,7 +526,7 @@ inline std::string GetKMSSiteXml() {
 
   <property>
     <name>hadoop.kms.authentication.kerberos.keytab</name>
-    <value>${user.home}/kms.keytab</value>
+    <value>$1</value>
     <description>
       Path to the keytab with credentials for the configured Kerberos principal.
     </description>
@@ -627,7 +627,10 @@ inline std::string GetKMSSiteXml() {
   </property>
 </configuration>
 )";
-  return kmsSiteXml;
+  if (secure) {
+    return strings::Substitute(kmsSiteXml, "kerberos", keytab);
+  }
+  return strings::Substitute(kmsSiteXml, "simple", keytab);
 }
 
 inline std::string GetRangerKMSAuditXml() {

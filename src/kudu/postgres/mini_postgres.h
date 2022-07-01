@@ -83,7 +83,7 @@ class MiniPostgres {
 
   bool firstRun() const { return !Env::Default()->FileExists(pg_root()); }
 
-  bool isRunning() const { return process_->IsStarted(); };
+  bool isRunning() const { return process_ && process_->IsStarted(); };
 
  private:
   static std::string GetBinDir() {
