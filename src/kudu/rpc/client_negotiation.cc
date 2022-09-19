@@ -118,7 +118,7 @@ static Status StatusFromRpcError(const ErrorStatusPB& error) {
 ClientNegotiation::ClientNegotiation(unique_ptr<Socket> socket,
                                      const security::TlsContext* tls_context,
                                      std::optional<security::SignedTokenPB> authn_token,
-                                     boost::optional<security::JwtRawPB> jwt,
+                                     std::optional<security::JwtRawPB> jwt,
                                      RpcEncryption encryption,
                                      bool encrypt_loopback,
                                      std::string sasl_proto_name)

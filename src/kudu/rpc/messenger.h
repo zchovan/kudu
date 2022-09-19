@@ -396,7 +396,7 @@ class Messenger {
     authn_token_ = token;
   }
 
-  boost::optional<security::JwtRawPB> jwt() const {
+  std::optional<security::JwtRawPB> jwt() const {
     std::lock_guard<simple_spinlock> l(authn_token_lock_);
     return jwt_;
   }
