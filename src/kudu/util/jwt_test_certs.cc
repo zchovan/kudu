@@ -18,6 +18,17 @@
 
 #include <string>
 
+#include <jwt-cpp/jwt.h>
+
+#include "kudu/gutil/strings/substitute.h"
+#include "kudu/util/env.h"
+#include "kudu/util/path_util.h"
+#include "kudu/util/status.h"
+
+using strings::Substitute;
+
+namespace kudu {
+
 std::string rsa_priv_key_pem = R"(-----BEGIN PRIVATE KEY-----
 MIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQC4ZtdaIrd1BPIJ
 tfnF0TjIK5inQAXZ3XlCrUlJdP+XHwIRxdv1FsN12XyMYO/6ymLmo9ryoQeIrsXB
@@ -331,3 +342,33 @@ std::string jwks_ec_file_format = R"(
   ]
 })";
 
+std::string CreateTestJWT(bool is_valid) {
+  return jwt::create()
+      .set_issuer(Substitute("auth0/$0", "test_account_id"))
+      .set_type("JWT")
+      .set_algorithm("RS256")
+      .set_key_id(is_valid ? kid_1 : kid_2)
+      .set_subject("test_subject")
+      .sign(jwt::algorithm::rs256(rsa_pub_key_pem, rsa_priv_key_pem, "", ""));
+}
+
+Status CreateTestJWKSFile(const std::string& dir, const std::string& file_name) {
+  //"keys": [
+  //    { "kty": "RSA", "kid": "$0", "alg": "$1", "n": "$2", "e": "$3" },
+  //    { "kty": "RSA", "kid": "$4", "alg": "$5", "n": "$6", "e": "$7" }
+  //  ]
+  const std::string jwks_content = Substitute(jwks_rsa_file_format,
+                                              /* kid */ kid_1,
+                                              /* alg */ "RS256",
+                                              /* n */ rsa_pub_key_jwk_n,
+                                              /* e */ rsa_pub_key_jwk_e,
+                                              /* kid */ kid_2,
+                                              /* alg */ "RS512",
+                                              /* n */ rsa512_pub_key_jwk_n,
+                                              /* e */ rsa512_pub_key_jwk_e);
+  RETURN_NOT_OK(Env::Default()->CreateDir(dir));
+  RETURN_NOT_OK(WriteStringToFile(Env::Default(), jwks_content,
+                                  JoinPathSegments(dir, file_name)));
+  return Status::OK();
+}
+}  // namespace kudu

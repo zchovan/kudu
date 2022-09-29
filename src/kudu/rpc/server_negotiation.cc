@@ -204,12 +204,13 @@ void ServerNegotiation::set_deadline(const MonoTime& deadline) {
 Status ServerNegotiation::Negotiate() {
   TRACE("Beginning negotiation");
 
-  // Wait until starting negotiation to check that the socket, tls_context, and
-  // token_verifier are not null, since they do not need to be set for
+  // Wait until starting negotiation to check that the socket, tls_context,
+  // token_verifier and jwt_verifier are not null, since they do not need to be set for
   // PreflightCheckGSSAPI.
   DCHECK(socket_);
   DCHECK(tls_context_);
   DCHECK(token_verifier_);
+  DCHECK(jwt_verifier_);
 
   // Ensure we can use blocking calls on the socket during negotiation.
   RETURN_NOT_OK(CheckInBlockingMode(socket_.get()));
@@ -501,7 +502,6 @@ Status ServerNegotiation::HandleNegotiate(const NegotiatePB& request) {
           }
           break;
         case AuthenticationTypePB::kJwt:
-          LOG(INFO) << "AWONG INSERT JWT";
           authn_types.insert(AuthenticationType::JWT);
           break;
         case AuthenticationTypePB::TYPE_NOT_SET: {
@@ -547,7 +547,6 @@ Status ServerNegotiation::HandleNegotiate(const NegotiatePB& request) {
     DCHECK(ContainsKey(authn_types, AuthenticationType::SASL));
     negotiated_authn_ = AuthenticationType::SASL;
   }
-  LOG(INFO) << "AWONG " << negotiated_authn_;
 
   // Fill in the NEGOTIATE step response for the client.
   NegotiatePB response;

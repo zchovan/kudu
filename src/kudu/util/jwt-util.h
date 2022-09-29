@@ -128,4 +128,4 @@ class PerAccountKeyBasedJwtVerifier : public JwtVerifier {
   DISALLOW_COPY_AND_ASSIGN(PerAccountKeyBasedJwtVerifier);
 };
 
-} // namespace impala
+} // namespace kudu

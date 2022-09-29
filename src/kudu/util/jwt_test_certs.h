@@ -18,6 +18,9 @@
 
 #include <string>
 
+#include "kudu/util/status.h"
+namespace kudu {
+
 extern std::string rsa_priv_key_pem;
 extern std::string rsa_pub_key_pem;
 // The public keys in JWK format were converted from PEM formatted crypto keys with
@@ -69,3 +72,7 @@ extern std::string jwks_hs_file_format;
 extern std::string jwks_rsa_file_format;
 extern std::string jwks_ec_file_format;
 
+std::string CreateTestJWT(bool is_valid);
+Status CreateTestJWKSFile(const std::string& dir, const std::string& file_name);
+
+}  // namespace kudu

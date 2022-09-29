@@ -203,9 +203,10 @@ static Status DoClientNegotiation(Connection* conn,
 
       if (authentication == RpcAuthentication::REQUIRED &&
           !authn_token &&
-          !messenger->tls_context().has_signed_cert()) {
+          !messenger->tls_context().has_signed_cert() &&
+          !jwt) {
         return Status::InvalidArgument(
-            "Kerberos, token, or PKI certificate credentials must be provided in order to "
+            "Kerberos, token, JWT, or PKI certificate credentials must be provided in order to "
             "require authentication for a client");
       }
     }
@@ -233,6 +234,11 @@ static Status DoClientNegotiation(Connection* conn,
   // the negotiated authentication type cannot be AuthenticationType::TOKEN.
   DCHECK(!(!authn_token &&
            client_negotiation.negotiated_authn() == AuthenticationType::TOKEN));
+
+  // Sanity check: if no JWT token was supplied as user credentials,
+  // the negotiated authentication type cannot be AuthenticationType::JWT.
+  DCHECK(!(!jwt &&
+           client_negotiation.negotiated_authn() == AuthenticationType::JWT));
 
   return Status::OK();
 }

@@ -66,15 +66,14 @@ void OidcDiscoveryHandler(const Webserver::WebRequest& req,
     resp->status_code = HttpStatusCode::BadRequest;
     return;
   }
-  resp->output << Substitute(kDiscoveryFormat, *account_id,
-                             Substitute("$0/$1", jwks_server_url, *account_id));
+  resp->output << Substitute(
+      kDiscoveryFormat, *account_id, Substitute("$0/$1", jwks_server_url, *account_id));
   resp->status_code = HttpStatusCode::Ok;
 }
 
-} // anonymous namespace
+}  // anonymous namespace
 
-MiniOidc::MiniOidc(MiniOidcOptions options)
-    : options_(std::move(options)) {
+MiniOidc::MiniOidc(MiniOidcOptions options) : options_(std::move(options)) {
   if (options_.expiration_time.empty()) {
     // XXX:
   }
@@ -96,17 +95,26 @@ Status MiniOidc::Start() {
     jwks_server_.reset(new Webserver(std::move(opts)));
   }
   for (const auto& [account_id, valid] : options_.account_ids) {
-    jwks_server_->RegisterPrerenderedPathHandler(Substitute("/jwks/$0", account_id), account_id,
-        [account_id = account_id, valid = valid] (const Webserver::WebRequest& req,
-                                                  Webserver::PrerenderedWebResponse* resp) {
+    jwks_server_->RegisterPrerenderedPathHandler(
+        Substitute("/jwks/$0", account_id),
+        account_id,
+        [account_id = account_id, valid = valid](const Webserver::WebRequest& req,
+                                                 Webserver::PrerenderedWebResponse* resp) {
           // NOTE: 'kid_1' points at a valid key, while 'kid_2' points at an
           // invalid key.
-          resp->output << Substitute(jwks_rsa_file_format, kid_1, "RS256",
-              valid ? rsa_pub_key_jwk_n : rsa_invalid_pub_key_jwk_n,
-              rsa_pub_key_jwk_e, kid_2, "RS256", rsa_invalid_pub_key_jwk_n, rsa_pub_key_jwk_e),
-          resp->status_code = HttpStatusCode::Ok;
+          resp->output << Substitute(jwks_rsa_file_format,
+                                     kid_1,
+                                     "RS256",
+                                     valid ? rsa_pub_key_jwk_n : rsa_invalid_pub_key_jwk_n,
+                                     rsa_pub_key_jwk_e,
+                                     kid_2,
+                                     "RS256",
+                                     rsa_invalid_pub_key_jwk_n,
+                                     rsa_pub_key_jwk_e),
+              resp->status_code = HttpStatusCode::Ok;
         },
-        /*is_styled*/false, /*is_on_nav_bar*/false);
+        /*is_styled*/ false,
+        /*is_on_nav_bar*/ false);
   }
   RETURN_NOT_OK(jwks_server_->Start());
   vector<Sockaddr> bound_addrs;
@@ -120,13 +128,15 @@ Status MiniOidc::Start() {
   opts.port = 0;
   oidc_server_.reset(new Webserver(std::move(opts)));
   oidc_server_->RegisterPrerenderedPathHandler(
-      "/.well-known/openid-configuration", "openid-configuration",
+      "/.well-known/openid-configuration",
+      "openid-configuration",
       // Pass the 'accountId' query arguments to return a response that
       // points to the JWKS endpoint for the account.
-      [jwks_url] (const Webserver::WebRequest& req, Webserver::PrerenderedWebResponse* resp) {
+      [jwks_url](const Webserver::WebRequest& req, Webserver::PrerenderedWebResponse* resp) {
         OidcDiscoveryHandler(req, resp, jwks_url);
       },
-      /*is_styled*/false, /*is_on_nav_bar*/false);
+      /*is_styled*/ false,
+      /*is_on_nav_bar*/ false);
   RETURN_NOT_OK(oidc_server_->Start());
   bound_addrs.clear();
   RETURN_NOT_OK(oidc_server_->GetBoundAddresses(&bound_addrs));
@@ -141,13 +151,13 @@ void MiniOidc::Stop() {
 }
 
 string MiniOidc::CreateJwt(const string& account_id, const string& subject, bool is_valid) const {
- return jwt::create()
-     .set_issuer(Substitute("auth0/$0", account_id))
-     .set_type("JWT")
-     .set_algorithm("RS256")
-     .set_key_id(is_valid ? kid_1 : kid_2)
-     .set_subject(subject)
-     .sign(jwt::algorithm::rs256(rsa_pub_key_pem, rsa_priv_key_pem, "", ""));
+  return jwt::create()
+      .set_issuer(Substitute("auth0/$0", account_id))
+      .set_type("JWT")
+      .set_algorithm("RS256")
+      .set_key_id(is_valid ? kid_1 : kid_2)
+      .set_subject(subject)
+      .sign(jwt::algorithm::rs256(rsa_pub_key_pem, rsa_priv_key_pem, "", ""));
 }
 
-} // namespace kudu
+}  // namespace kudu
