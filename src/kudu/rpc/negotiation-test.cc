@@ -1037,46 +1037,48 @@ INSTANTIATE_TEST_SUITE_P(NegotiationCombinations,
         // server: GSSAPI, TLS required, externally-signed cert
         // connection from public routable IP
         NegotiationDescriptor {
-            EndpointConfig {
-                PkiConfig::EXTERNALLY_SIGNED,
-                { SaslMechanism::GSSAPI },
-                false,
-                false,
-                RpcEncryption::REQUIRED,
-            },
-            EndpointConfig {
-                PkiConfig::EXTERNALLY_SIGNED,
-                { SaslMechanism::GSSAPI },
-                false,
-                false,
-                RpcEncryption::REQUIRED,
-            },
-            true,
-            // true as no longer a loopback connection.
-            true,
-            Status::OK(),
-            Status::OK(),
-            AuthenticationType::SASL,
-            SaslMechanism::GSSAPI,
-            true,
-        },
-
-        // client:
-        // server:
-        NegotiationDescriptor {
           EndpointConfig {
-              PkiConfig::EXTERNALLY_SIGNED,
-              { },
-              false,
-              true,
-              RpcEncryption::REQUIRED
+            PkiConfig::EXTERNALLY_SIGNED,
+            { SaslMechanism::GSSAPI },
+            false,
+            false,
+            RpcEncryption::REQUIRED,
           },
           EndpointConfig {
-              PkiConfig::EXTERNALLY_SIGNED,
-              {  },
-              false,
-              true,
-              RpcEncryption::REQUIRED
+            PkiConfig::EXTERNALLY_SIGNED,
+            { SaslMechanism::GSSAPI },
+            false,
+            false,
+            RpcEncryption::REQUIRED,
+          },
+          true,
+          // true as no longer a loopback connection.
+          true,
+          Status::OK(),
+          Status::OK(),
+          AuthenticationType::SASL,
+          SaslMechanism::GSSAPI,
+          true,
+        },
+
+
+        // client: JWT, TLS required
+        // server: JWT, TLS required
+        // connecting with JWT only
+        NegotiationDescriptor {
+          EndpointConfig {
+            PkiConfig::EXTERNALLY_SIGNED,
+            { },
+            false,
+            true,
+            RpcEncryption::REQUIRED
+          },
+          EndpointConfig {
+            PkiConfig::EXTERNALLY_SIGNED,
+            {  },
+            false,
+            true,
+            RpcEncryption::REQUIRED
           },
           true,
           true,
@@ -1085,8 +1087,115 @@ INSTANTIATE_TEST_SUITE_P(NegotiationCombinations,
           AuthenticationType::JWT,
           SaslMechanism::INVALID,
           true,
-        }
+        },
 
+
+        // client: JWT, TLS required, self-signed cert
+        // server: JWT, TLS required, self-signed cert
+        NegotiationDescriptor {
+          EndpointConfig {
+            PkiConfig::SELF_SIGNED,
+            { },
+            false,
+            true,
+            RpcEncryption::REQUIRED
+          },
+          EndpointConfig {
+            PkiConfig::SELF_SIGNED,
+            {  },
+            false,
+            true,
+            RpcEncryption::REQUIRED
+          },
+          true,
+          true,
+          Status::OK(),
+          Status::OK(),
+          AuthenticationType::JWT,
+          SaslMechanism::INVALID,
+          true,
+        },
+
+
+        // client: GSSAPI, JWT, TLS required
+        // server: JWT, TLS required
+        NegotiationDescriptor {
+          EndpointConfig {
+            PkiConfig::EXTERNALLY_SIGNED,
+            { SaslMechanism::GSSAPI },
+            false,
+            true,
+            RpcEncryption::REQUIRED
+          },
+          EndpointConfig {
+            PkiConfig::EXTERNALLY_SIGNED,
+            { SaslMechanism::PLAIN },
+            false,
+            true,
+            RpcEncryption::REQUIRED
+          },
+          true,
+          true,
+          Status::OK(),
+          Status::OK(),
+          AuthenticationType::JWT,
+          SaslMechanism::INVALID,
+          true,
+        },
+
+
+        // client: JWT, TLS disabled
+        // server: JWT, TLS required
+        NegotiationDescriptor {
+          EndpointConfig {
+            PkiConfig::EXTERNALLY_SIGNED,
+            { },
+            false,
+            true,
+            RpcEncryption::DISABLED
+          },
+          EndpointConfig {
+            PkiConfig::EXTERNALLY_SIGNED,
+            {  },
+            false,
+            true,
+            RpcEncryption::REQUIRED
+          },
+          true,
+          true,
+          Status::NotAuthorized(".*client does not support required TLS encryption"),
+          Status::NotAuthorized(""),
+          AuthenticationType::JWT,
+          SaslMechanism::INVALID,
+          true,
+        },
+
+
+        // client: GSSAPI, JWT, TLS required
+        // server: JWT, TLS disabled
+        NegotiationDescriptor {
+          EndpointConfig {
+            PkiConfig::EXTERNALLY_SIGNED,
+            { SaslMechanism::GSSAPI },
+            false,
+            true,
+            RpcEncryption::REQUIRED
+          },
+          EndpointConfig {
+            PkiConfig::EXTERNALLY_SIGNED,
+            { SaslMechanism::PLAIN },
+            false,
+            true,
+            RpcEncryption::DISABLED
+          },
+          true,
+          true,
+          Status::NotAuthorized(".*server does not support required TLS encryption"),
+          Status::NetworkError(""),
+          AuthenticationType::JWT,
+          SaslMechanism::INVALID,
+          true,
+       }
 
 
 ));
