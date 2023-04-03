@@ -64,7 +64,12 @@ class JWTHelper {
 
   // Load JWKS from a given local JSON file or URL. Returns an error if problems were
   // encountered.
-  Status Init(const std::string& jwks_uri, bool is_local_file);
+  Status Init(const std::string& jwks_uri);
+
+  // Load JWKS from a given local JSON file or URL. Returns an error if problems were
+  // encountered.
+  Status Init(const std::string& jwks_uri, bool jwks_verify_server_certificate,
+              const std::string& jwks_ca_certificate, bool is_local_file);
 
   // Decode the given JWT token. The decoding result is stored in decoded_token_out.
   // Return Status::OK if the decoding is successful.

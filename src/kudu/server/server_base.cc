@@ -272,6 +272,22 @@ DEFINE_string(jwks_url, "",
     "URL of the JSON Web Key Set (JWKS) for JWT verification.");
 TAG_FLAG(jwks_url, experimental);
 
+// Enables retrieving the JWKS URL without verifying the presented TLS certificate
+// from the server.
+DEFINE_bool(jwks_verify_server_certificate, true,
+            "Specifies if the TLS certificate of the JWKS server is verified when retrieving "
+            "the JWKS from the specified JWKS URL.  A certificate is considered valid if a "
+            "trust chain can be established for it, and if the certificate has a common name or "
+            "SAN that matches the server's hostname. This should only be set to false for "
+            "development / testing.");
+TAG_FLAG(jwks_verify_server_certificate, experimental);
+
+// Enables defining a custom pem bundle file containing root certificates to trust.
+DEFINE_string(jwks_ca_certificate, "", "File path of a pem bundle of root ca "
+              "certificates that will be trusted when retrieving the JWKS from the "
+              "specified JWKS URL.");
+TAG_FLAG(jwks_ca_certificate, experimental);
+
 DEFINE_string(jwks_discovery_endpoint_base, "",
               "Base URL of the Discovery Endpoint that points to a JSON Web Key Set "
               "(JWKS) for JWT verification. Additional query parameters, like 'accountId', "
