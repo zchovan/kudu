@@ -39,6 +39,10 @@ struct MiniOidcOptions {
 
   // Maps account IDs to add to whether or not to create JWKS with invalid keys.
   std::unordered_map<std::string, bool> account_ids;
+
+  std::string server_certificate;
+
+  std::string private_key_file;
 };
 
 // Serves the following endpoints for testing a cluster:

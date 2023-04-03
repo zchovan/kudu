@@ -57,6 +57,7 @@
 #include "kudu/rpc/rpc_controller.h"
 #include "kudu/security/kinit_context.h"
 #include "kudu/security/test/mini_kdc.h"
+#include "kudu/security/test/test_certs.h"
 #include "kudu/security/token.pb.h"
 #include "kudu/server/server_base.pb.h"
 #include "kudu/server/server_base.proxy.h"
@@ -527,6 +528,23 @@ TEST_F(SecurityITest, TestJwtMiniCluster) {
     { kInvalidAccount, false },
   };
   oidc_opts.lifetime_ms = kLifetimeMs;
+
+  // Set up certificates for the JWKS server
+  string ca_certificate_file;
+  string private_key_file;
+  string certificate_file;
+  ASSERT_OK(kudu::security::CreateTestSSLCertWithChainSignedByRoot(GetTestDataDirectory(),
+                                                                       &certificate_file,
+                                                                       &private_key_file,
+                                                                       &ca_certificate_file));
+  // set the certs and private key for the jwks webserver
+  oidc_opts.private_key_file = private_key_file;
+  oidc_opts.server_certificate = certificate_file;
+  // enable jwks certificate verification and set the ca_cert
+  cluster_opts_.extra_master_flags.push_back("--jwks_verify_server_certificate=true");
+  cluster_opts_.extra_master_flags.push_back(Substitute("--trusted_certificate_file=$0",
+                                                        ca_certificate_file));
+
   cluster_opts_.mini_oidc_options = std::move(oidc_opts);
   ASSERT_OK(StartCluster());
   const auto* const kSubject = "kudu-user";
