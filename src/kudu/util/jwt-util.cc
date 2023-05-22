@@ -968,7 +968,9 @@ Status JWTHelper::GetCustomClaimUsername(const JWTDecodedToken* decoded_token,
 }
 
 Status KeyBasedJwtVerifier::Init() {
-  return jwt_->Init(jwks_uri_, /*jwks_verify_server_certificate*/ false, is_local_file_);
+  return jwt_->Init(jwks_uri_,
+                    (is_local_file_) ? false : jwks_verify_server_certificate_,
+                    is_local_file_);
 }
 
 Status KeyBasedJwtVerifier::VerifyToken(const string& bytes_raw, string* subject) const {

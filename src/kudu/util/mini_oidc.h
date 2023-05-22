@@ -84,8 +84,13 @@ class MiniOidc {
   std::string CreateJwt(const std::string& account_id,
                         const std::string& subject,
                         bool is_valid);
+
   const std::string& url() const {
     return oidc_url_;
+  }
+
+  const std::string& jwks_url() const {
+    return jwks_url_;
   }
  private:
   MiniOidcOptions options_;
@@ -95,6 +100,8 @@ class MiniOidc {
   std::string oidc_url_;
 
   std::unique_ptr<Webserver> jwks_server_;
+
+  std::string jwks_url_;
 };
 
 } // namespace kudu

@@ -580,11 +580,11 @@ TEST_F(SecurityITest, TestJwtMiniCluster) {
 
   const auto* const kSubject = "kudu-user";
   const auto configure_builder_for =
-      [&] (const string& account_id, KuduClientBuilder* b, const uint64_t delay_ms) {
+      [&] (const string& account_id, KuduClientBuilder* b, const uint64_t delay_ms, bool is_valid) {
     for (auto i = 0; i < cluster_->num_masters(); ++i) {
       b->add_master_server_addr(cluster_->master(i)->bound_rpc_addr().ToString());
     }
-    b->jwt(cluster_->oidc()->CreateJwt(account_id, kSubject, true));
+    b->jwt(cluster_->oidc()->CreateJwt(account_id, kSubject, is_valid));
     b->require_authentication(true);
     b->trusted_certificate(cluster_cert_pem);
     SleepFor(MonoDelta::FromMilliseconds(delay_ms));
@@ -594,7 +594,7 @@ TEST_F(SecurityITest, TestJwtMiniCluster) {
     SCOPED_TRACE("Valid JWT");
     KuduClientBuilder valid_builder;
     shared_ptr<KuduClient> client;
-    configure_builder_for(kValidAccount, &valid_builder, 0);
+    configure_builder_for(kValidAccount, &valid_builder, 0, true);
     ASSERT_OK(valid_builder.Build(&client));
     vector<string> tables;
     ASSERT_OK(client->ListTables(&tables));
@@ -603,7 +603,7 @@ TEST_F(SecurityITest, TestJwtMiniCluster) {
     SCOPED_TRACE("Invalid JWT");
     KuduClientBuilder invalid_builder;
     shared_ptr<KuduClient> client;
-    configure_builder_for(kInvalidAccount, &invalid_builder, 0);
+    configure_builder_for(kInvalidAccount, &invalid_builder, 0, false);
     Status s = invalid_builder.Build(&client);
     ASSERT_TRUE(s.IsRuntimeError()) << s.ToString();
     ASSERT_STR_CONTAINS(s.ToString(), "FATAL_INVALID_JWT");
@@ -612,7 +612,7 @@ TEST_F(SecurityITest, TestJwtMiniCluster) {
     SCOPED_TRACE("Expired JWT");
     KuduClientBuilder timeout_builder;
     shared_ptr<KuduClient> client;
-    configure_builder_for(kValidAccount, &timeout_builder, 3 * kLifetimeMs);
+    configure_builder_for(kValidAccount, &timeout_builder, 3 * kLifetimeMs, true);
     Status s = timeout_builder.Build(&client);
     ASSERT_TRUE(s.IsRuntimeError()) << s.ToString();
     ASSERT_STR_CONTAINS(s.ToString(), "token expired");

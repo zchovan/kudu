@@ -252,7 +252,10 @@ TEST_P(TestNegotiation, TestNegotiation) {
   std::shared_ptr<JwtVerifier> jwt_verifier;
   if (desc.server.jwt) {
     jwt_verifier = std::make_shared<kudu::KeyBasedJwtVerifier>(
-        JoinPathSegments(jwt_test_dir, jwks_file_name), /* is_local_file */ true);
+        JoinPathSegments(jwt_test_dir, jwks_file_name),
+        /* is_local_file */ true,
+        /* jwks_verify_server_certificate*/ false,
+        /* jwks_ca_certificate */ "");
     ASSERT_OK(jwt_verifier-> Init());
   }
   optional<security::JwtRawPB> jwt_token;
@@ -1557,7 +1560,10 @@ static void RunTimeoutExpectingServer(unique_ptr<Socket> socket) {
   string jwt_data = kudu::CreateTestJWT(true);
   ASSERT_OK(kudu::CreateTestJWKSFile(jwt_test_dir, jwks_file_name));
   kudu::KeyBasedJwtVerifier jwt_verifier(
-      JoinPathSegments(jwt_test_dir, jwks_file_name), true);
+      JoinPathSegments(jwt_test_dir, jwks_file_name),
+      /* is_local_file */ true,
+      /* jwks_verify_server_certificate*/ false,
+      /* jwks_ca_certificate */ "");
   CHECK_OK(jwt_verifier.Init());
   ServerNegotiation server_negotiation(std::move(socket), &tls_context,
                                        &token_verifier, &jwt_verifier, RpcEncryption::OPTIONAL,
@@ -1598,7 +1604,10 @@ static void RunTimeoutNegotiationServer(unique_ptr<Socket> socket) {
   string jwt_data = kudu::CreateTestJWT(true);
   ASSERT_OK(kudu::CreateTestJWKSFile(jwt_test_dir, jwks_file_name));
   kudu::KeyBasedJwtVerifier jwt_verifier(
-      JoinPathSegments(jwt_test_dir, jwks_file_name), true);
+      JoinPathSegments(jwt_test_dir, jwks_file_name),
+      /* is_local_file */ true,
+      /* jwks_verify_server_certificate*/ false,
+      /* jwks_ca_certificate */ "");
   CHECK_OK(jwt_verifier.Init());
   ServerNegotiation server_negotiation(std::move(socket), &tls_context,
                                        &token_verifier, &jwt_verifier, RpcEncryption::OPTIONAL,
