@@ -20,6 +20,7 @@ package org.apache.kudu.client;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Executor;
+import java.security.cert.CertificateException;
 
 import com.google.common.base.Preconditions;
 import com.google.protobuf.ByteString;
@@ -466,6 +467,10 @@ public class KuduClient implements AutoCloseable {
   @InterfaceStability.Unstable
   public void importAuthenticationCredentials(byte[] authnData) {
     asyncClient.importAuthenticationCredentials(authnData);
+  }
+
+  public void trustedCertificate(List<ByteString> certificates) throws CertificateException {
+    asyncClient.trustedCertificate(certificates);
   }
 
   /**

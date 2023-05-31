@@ -326,11 +326,19 @@ class SecurityContext {
       if (pb.hasAuthnToken()) {
         authnToken = pb.getAuthnToken();
       }
-      trustCertificates(pb.getCaCertDersList());
+
+      // only trust ca certificates automatically if they were acquired with mutual trust of
+      // identities
+      if (!pb.hasJwt()) {
+        LOG.info("trusting certs because not jwt");
+        trustCertificates(pb.getCaCertDersList());
+      } else {
+        LOG.info("not trusting certs because jwt");
+      }
 
       if (pb.hasJwt()) {
         // Don't overwrite the JWT in the context if it's already set.
-        if (!jsonWebToken.hasJwtData() ||
+        if (!jsonWebToken.hasJwtData() || !jsonWebToken.isInitialized() ||
             (jsonWebToken.hasJwtData() && jsonWebToken.getJwtData().isEmpty())) {
           jsonWebToken = pb.getJwt();
         }

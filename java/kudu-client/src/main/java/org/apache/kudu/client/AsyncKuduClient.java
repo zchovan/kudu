@@ -75,6 +75,7 @@ import org.slf4j.LoggerFactory;
 
 import org.apache.kudu.Common;
 import org.apache.kudu.Schema;
+import org.apache.kudu.client.Client.AuthenticationCredentialsPB;
 import org.apache.kudu.master.Master;
 import org.apache.kudu.master.Master.GetTableLocationsResponsePB;
 import org.apache.kudu.master.Master.TSInfoPB;
@@ -1178,6 +1179,10 @@ public class AsyncKuduClient implements AutoCloseable {
     securityContext.importAuthenticationCredentials(authnData);
   }
 
+  public void trustedCertificate(List<ByteString> certificates) throws CertificateException {
+    securityContext.trustCertificates(certificates);
+  }
+
   /**
    * Set JWT (JSON Web Token) to authenticate the client to a server.
    * <p>
@@ -1190,10 +1195,18 @@ public class AsyncKuduClient implements AutoCloseable {
    */
   @InterfaceStability.Unstable
   public void jwt(String jwt) {
-    Token.JwtRawPB jwtPB = Token.JwtRawPB.newBuilder()
-        .setJwtData(ByteString.copyFromUtf8(jwt))
-        .build();
-    securityContext.setJsonWebToken(jwtPB);
+    AuthenticationCredentialsPB credentials =
+    AuthenticationCredentialsPB.newBuilder()
+      .setJwt(Token.JwtRawPB.newBuilder()
+              .setJwtData(ByteString.copyFromUtf8(jwt))
+              .build())
+      .build();
+    try {
+      securityContext.importAuthenticationCredentials(credentials.toByteArray());
+    } catch (NullPointerException e) {
+      LOG.error(e.toString());
+      throw e;
+    }
   }
 
   /**
