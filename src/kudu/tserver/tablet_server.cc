@@ -45,6 +45,7 @@
 #include "kudu/util/net/dns_resolver.h"
 #include "kudu/util/net/net_util.h"
 #include "kudu/util/status.h"
+#include "kudu/cdc/cdc_service.h"
 
 namespace kudu {
 class Timer;
@@ -152,11 +153,13 @@ Status TabletServer::Start() {
   unique_ptr<ServiceIf> consensus_service(new ConsensusServiceImpl(this, tablet_manager_.get()));
   unique_ptr<ServiceIf> tablet_copy_service(new TabletCopyServiceImpl(
       this, tablet_manager_.get()));
+  unique_ptr<ServiceIf> cdc_service(new cdc::CDCServiceImpl(tablet_manager_.get(), metric_entity(), result_tracker()));
 
   RETURN_NOT_OK(RegisterService(std::move(ts_service)));
   RETURN_NOT_OK(RegisterService(std::move(admin_service)));
   RETURN_NOT_OK(RegisterService(std::move(consensus_service)));
   RETURN_NOT_OK(RegisterService(std::move(tablet_copy_service)));
+  RETURN_NOT_OK(RegisterService(std::move(cdc_service)));
   RETURN_NOT_OK(KuduServer::Start());
 
   if (web_server_) {

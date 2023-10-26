@@ -501,6 +501,14 @@ inline Status& Status::operator=(const Status& s) {
   return *this;
 }
 
+inline Status&& MoveStatus(Status&& status) {
+  return std::move(status);
+}
+
+inline const Status& MoveStatus(const Status& status) {
+  return status;
+}
+
 #if __cplusplus >= 201103L
 inline Status::Status(Status&& s) noexcept : state_(s.state_) {
   s.state_ = nullptr;

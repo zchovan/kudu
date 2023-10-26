@@ -125,6 +125,7 @@ endif()
 
 add_library(tserver ${TSERVER_SRCS})
 target_link_libraries(tserver
+  cdc
   clock
   consensus
   consensus_proto

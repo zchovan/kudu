@@ -227,6 +227,10 @@ void RpcContext::Panic(const char* filepath, int line_number, const string& mess
 #undef MY_FATAL
 }
 
+std::string RpcContext::ToString() const {
+  return call_->ToString();
+}
+
 
 } // namespace rpc
 } // namespace kudu

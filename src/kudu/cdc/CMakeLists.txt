@@ -34,3 +34,57 @@ ADD_EXPORTABLE_LIBRARY(cdc_service_proto
   SRCS ${CDC_KRPC_SRCS}
   DEPS ${CDC_KRPC_LIBS}
   NONLINK_DEPS ${CDC_KRPC_TGTS})
+
+#########################################
+# cdc_service
+#########################################
+
+set(CDC_SRCS
+  cdc_service.cc
+  cdc_producer.cc)
+
+add_library(cdc ${CDC_SRCS})
+target_link_libraries(cdc
+  protobuf
+  cdc_service_proto
+  master_proto
+  consensus_proto
+  log_proto
+  log
+  consensus
+  krpc
+  server_process
+  tablet
+  kudu_util
+  gutil)
+
+#######################################
+# Test utility library
+#######################################
+# if(NOT NO_TESTS)
+#   # This code is useful for other tests which use the client, but isn't
+#   # part of the client itself (ie we don't want to ship it to customers,
+#   # and therefore don't need to worry about export strictness)
+#   add_library(kudu_cdc_test_util
+#     cdc_test_util.cc)
+#   target_link_libraries(kudu_cdc_test_util
+#     cdc_service_proto
+#     gmock
+#     gtest)
+# endif()
+
+#########################################
+# cdc tests
+#########################################
+
+SET_KUDU_TEST_LINK_LIBS(
+  cdc
+  tserver
+  tserver_test_util
+  kudu_client # yb::client::YBTableName
+  tablet_test_util
+  # kudu_cdc_test_util
+  ${KUDU_MIN_TEST_LIBS}
+)
+
+ADD_KUDU_TEST(cdc_service-test)

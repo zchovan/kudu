@@ -248,6 +248,9 @@ class RpcContext {
   void Panic(const char* filepath, int line_number, const std::string& message)
     __attribute__((noreturn));
 
+  std::string ToString() const;
+
+
  private:
   friend class ResultTracker;
   InboundCall* const call_;

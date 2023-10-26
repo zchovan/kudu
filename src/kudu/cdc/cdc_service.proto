@@ -116,7 +116,7 @@ message ListTabletsResponsePB {
 }
 
 message CDCTabletPB {
-  optional bytes tablet_uuid = 1;
+  optional bytes tablet_id = 1;
   // Tservers holding data for the tablet
   repeated HostPortPB tserver = 2;
 }
@@ -128,7 +128,7 @@ message CDCCheckpointPB {
 message GetChangesRequestPB {
   optional bytes subscriber_uuid = 1;
   // Tablet to get the changes for
-  optional bytes tablet_uuid = 2;
+  optional bytes tablet_id = 2;
 
   // Checkpoint to start reading from (exclusive)
   // Start reading from the first record after this checkpoint
@@ -142,6 +142,12 @@ message GetChangesRequestPB {
   optional uint32 max_records = 5;
 }
 
+// TODO(marton) : need to figure out how to port QLValuePB
+// message KeyValuePairPB {
+//   optional bytes key = 1;
+//   optional QLValuePB value = 2;
+// }
+
 message CDCRecordPB {
   enum OperationType {
     WRITE = 1;
@@ -150,13 +156,14 @@ message CDCRecordPB {
   optional uint64 time = 1;
   optional OperationType operation = 2;
 
-  // Primary key of the record that changed
-  optional google.protobuf.Struct key = 3;
+  // // Primary key of the record that changed
+  // repeated KeyValuePairPB key = 3;
 
-  // Key-value pairs (column_name : value) of changes / before record / after record
-  optional google.protobuf.Struct changes = 4;
-  optional google.protobuf.Struct before = 5;
-  optional google.protobuf.Struct after = 6;
+  // // Key-value pairs (column_name : value) of changes / before record / after record
+  // repeated KeyValuePairPB changes = 4;
+  // repeated KeyValuePairPB before = 5;
+  // repeated KeyValuePairPB after = 6;
+
 }
 
 message GetChangesResponsePB {
@@ -175,7 +182,7 @@ message GetChangesResponsePB {
 
 message GetCheckpointRequestPB {
   optional bytes subscriber_uuid = 1;
-  optional bytes tablet_uuid = 2;
+  optional bytes tablet_id = 2;
 }
 
 message GetCheckpointResponsePB {
