@@ -89,6 +89,7 @@ TEST_F(CDCServiceTest, TestGetChanges) {
   // Insert test rows
   WriteRequestPB write_req;
   WriteResponsePB write_resp;
+  ASSERT_OK(SchemaToPB(schema_, write_req.mutable_schema()));
 
   write_req.set_tablet_id(kTabletId);
 
@@ -100,6 +101,7 @@ TEST_F(CDCServiceTest, TestGetChanges) {
                    v.string_val_,
                    write_req.mutable_row_operations());
   }
+  SleepFor(MonoDelta::FromMilliseconds(1000));
 
   {
     RpcController controller;

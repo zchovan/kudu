@@ -43,7 +43,7 @@ struct CDCRecordMetadata {
 
 class CDCProducer {
  public:
-  explicit CDCProducer(const std::shared_ptr<tablet::TabletReplica>& tablet_replica)
+  explicit CDCProducer(const scoped_refptr<tablet::TabletReplica>& tablet_replica)
       : tablet_replica_(tablet_replica) {
   }
 
@@ -61,15 +61,14 @@ class CDCProducer {
  private:
   // Populate CDC record corresponding to WAL batch in ReplicateMsg.
   Status PopulateWriteRecord(const consensus::ReplicateRefPtr& write_msg,
-                                    //  const TxnStatusMap& txn_map,
-                                    const CDCRecordMetadata& metadata,
+                                     const CDCRecordMetadata& metadata,
                                      GetChangesResponsePB* resp);
 
 
 
   consensus::OpId GetLastCheckpoint(const std::string& subscriber_uuid);
 
-  std::shared_ptr<tablet::TabletReplica> tablet_replica_;
+  scoped_refptr<tablet::TabletReplica> tablet_replica_;
 };
 
 }  // namespace cdc

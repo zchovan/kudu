@@ -42,7 +42,7 @@ Status CDCProducer::GetChanges(const GetChangesRequestPB& req,
                                GetChangesResponsePB* resp) {
 //   const auto& record = VERIFY_RESULT(GetRecordMetadataForSubscriber(req.subscriber_uuid()));
   const auto record = GetRecordMetadataForSubscriber(req.subscriber_uuid());
-  KUDU_RETURN_NOT_OK(record.status());
+//  KUDU_RETURN_NOT_OK(record.status().OK());
 
   consensus::OpId from_op_id;
   if (req.has_from_checkpoint()) {
@@ -72,6 +72,70 @@ Status CDCProducer::GetChanges(const GetChangesRequestPB& req,
   return Status::OK();
 }
 
+std::string get_as_string(const uint8_t *ptr) {
+  const Slice *s = reinterpret_cast<const Slice *>(ptr);
+  const std::string str = strings::Utf8SafeCEscape(s->ToString());
+  return str;
+
+
+}
+
+void fill_with_data(const ConstContiguousRow &row, KeyValuePairPB* value_pair, int col_idx)
+{
+  const ColumnSchema& col=row.schema()->column(col_idx);
+  value_pair->set_column_id(col.name());
+  auto value = value_pair->mutable_value();
+  const uint8_t *ptr=row.cell_ptr(col_idx);
+  switch (col.type_info()->type()) {
+    case INT32:
+      value->set_int32_value((*reinterpret_cast<const int32_t *>(ptr)));
+      break;
+    case VARCHAR:
+      value->set_string_value(get_as_string(ptr));
+      break;
+    default:
+      break;
+  }
+
+}
+
+Status CDCProducer::PopulateWriteRecord(const consensus::ReplicateRefPtr& write_msg,
+                                        const CDCRecordMetadata& metadata,
+                                        GetChangesResponsePB* resp) {
+  const auto& batch = write_msg->get()->write_request().row_operations();
+
+  Schema client_schema;
+  RETURN_NOT_OK_PREPEND(SchemaFromPB(write_msg->get()->write_request().schema(), &client_schema),
+                        "Cannot decode client schema");
+
+  RowOperationsPBDecoder decoder(&batch, &client_schema, &client_schema, nullptr);
+  std::vector<DecodedRowOperation> ops;
+  Status s = decoder.DecodeOperations<WRITE_OPS>(&ops);
+
+  CDCRecordPB* record = nullptr;
+
+  for (const auto& op : ops) {
+    auto row = ConstContiguousRow(&client_schema, op.row_data);
+    record = resp->add_records();
+    // record->set_operation(CDCRecordPB_OperationType_WRITE);
+    //  record->set_time(write_msg->get);
+    for (size_t col_idx = 0; col_idx < row.schema()->num_key_columns(); col_idx++) {
+      KeyValuePairPB* keys = record->add_keys();
+      fill_with_data(row, keys, col_idx);
+    }
+
+    for (size_t col_idx = row.schema()->num_key_columns(); col_idx < row.schema()->num_columns(); col_idx++) {
+      KeyValuePairPB* changes = record->add_changes();
+      fill_with_data(row, changes, col_idx);
+    }
+
+
+  }
+  return Status::OK();
+}
+
+
+
 Result<CDCRecordMetadata> CDCProducer::GetRecordMetadataForSubscriber(
     const std::string& subscriber_uuid) {
   // TODO: This should read details from cdc_state table.
@@ -86,14 +150,5 @@ consensus::OpId CDCProducer::GetLastCheckpoint(const std::string& subscriber_uui
   return op_id;
 }
 
-// Populate CDC record corresponding to WAL batch in ReplicateMsg.
-Status CDCProducer::PopulateWriteRecord(const consensus::ReplicateRefPtr& write_msg,
-                                  //  const TxnStatusMap& txn_map,
-                                  const CDCRecordMetadata& metadata,
-                                   GetChangesResponsePB* resp) {
-
-                                    return Status::OK();
-}
-
 } // namespace cdc
-}  // namespace kudu
+} // namespace kudu
