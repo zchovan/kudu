@@ -148,19 +148,52 @@ message GetChangesRequestPB {
 //   optional QLValuePB value = 2;
 // }
 
+message CellValuePB {
+  // TODO: extend to full list
+  oneof value {
+    int32 int8_value = 1;
+    int32 int16_value = 2;
+    int32 int32_value = 3;
+    int64 int64_value = 4;
+    float float_value = 5;
+    double double_value = 6;
+    bytes string_value = 7;
+    bool bool_value = 8;
+    int64 timestamp_value = 9;
+    bytes binary_value = 10;
+    bytes inetaddress_value = 11;
+    bytes decimal_value = 15;
+    bytes varint_value = 16;
+    bytes uuid_value = 18;
+    bytes timeuuid_value = 19;
+    bytes jsonb_value = 20;
+    uint32 date_value = 21;
+    int64 time_value = 22;
+    uint32 uint32_value = 23;
+    uint64 uint64_value = 24;
+    uint32 gin_null_value = 26;
+  }
+}
+
+message KeyValuePairPB {
+  optional bytes column_id = 1;
+  optional CellValuePB value = 2;
+}
+
 message CDCRecordPB {
   enum OperationType {
     WRITE = 1;
     DELETE = 2;
   }
   optional uint64 time = 1;
+
   optional OperationType operation = 2;
 
   // // Primary key of the record that changed
-  // repeated KeyValuePairPB key = 3;
+  repeated KeyValuePairPB keys = 3;
 
-  // // Key-value pairs (column_name : value) of changes / before record / after record
-  // repeated KeyValuePairPB changes = 4;
+  repeated KeyValuePairPB changes = 4;
+  // TODO include:
   // repeated KeyValuePairPB before = 5;
   // repeated KeyValuePairPB after = 6;
 

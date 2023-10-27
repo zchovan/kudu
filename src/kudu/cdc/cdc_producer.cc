@@ -41,7 +41,8 @@ using consensus::ReplicateRefPtr;
 Status CDCProducer::GetChanges(const GetChangesRequestPB& req,
                                GetChangesResponsePB* resp) {
 //   const auto& record = VERIFY_RESULT(GetRecordMetadataForSubscriber(req.subscriber_uuid()));
-  const auto& record = GetRecordMetadataForSubscriber(req.subscriber_uuid());
+  const auto record = GetRecordMetadataForSubscriber(req.subscriber_uuid());
+  KUDU_RETURN_NOT_OK(record.status());
 
   consensus::OpId from_op_id;
   if (req.has_from_checkpoint()) {
@@ -57,7 +58,7 @@ Status CDCProducer::GetChanges(const GetChangesRequestPB& req,
   for (const auto& msg : messages) {
     switch (msg->get()->op_type()) {
       case consensus::OperationType::WRITE_OP:
-        // RETURN_NOT_OK(PopulateWriteRecord(msg, txn_map, record, resp));
+        RETURN_NOT_OK(PopulateWriteRecord(msg, *record, resp));
         break;
 
       default:
@@ -71,9 +72,6 @@ Status CDCProducer::GetChanges(const GetChangesRequestPB& req,
   return Status::OK();
 }
 
-
-
-
 Result<CDCRecordMetadata> CDCProducer::GetRecordMetadataForSubscriber(
     const std::string& subscriber_uuid) {
   // TODO: This should read details from cdc_state table.
@@ -86,6 +84,15 @@ consensus::OpId CDCProducer::GetLastCheckpoint(const std::string& subscriber_uui
   op_id.set_term(0);
   op_id.set_index(0);
   return op_id;
+}
+
+// Populate CDC record corresponding to WAL batch in ReplicateMsg.
+Status CDCProducer::PopulateWriteRecord(const consensus::ReplicateRefPtr& write_msg,
+                                  //  const TxnStatusMap& txn_map,
+                                  const CDCRecordMetadata& metadata,
+                                   GetChangesResponsePB* resp) {
+
+                                    return Status::OK();
 }
 
 } // namespace cdc
