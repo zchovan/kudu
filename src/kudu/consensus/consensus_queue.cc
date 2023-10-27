@@ -187,15 +187,12 @@ PeerMessageQueue::PeerMessageQueue(const scoped_refptr<MetricEntity>& metric_ent
     : raft_pool_observers_token_(std::move(raft_pool_observers_token)),
       server_quiescing_(server_quiescing),
       local_peer_pb_(std::move(local_peer_pb)),
-      local_peer_uuid_(local_peer_pb_.has_permanent_uuid() ? local_peer_pb_.permanent_uuid()
-                                                           : string()),
       tablet_id_(std::move(tablet_id)),
       successor_watch_in_progress_(false),
       log_cache_(metric_entity, std::move(log), local_peer_pb_.permanent_uuid(), tablet_id_),
       metrics_(metric_entity),
       time_manager_(time_manager),
       allow_status_msg_for_failed_peer_(allow_status_msg_for_failed_peer) {
-  DCHECK(local_peer_pb_.has_permanent_uuid());
   DCHECK(local_peer_pb_.has_last_known_addr());
   DCHECK(last_locally_replicated.IsInitialized());
   DCHECK(last_locally_committed.IsInitialized());
@@ -212,7 +209,6 @@ PeerMessageQueue::PeerMessageQueue(const scoped_refptr<MetricEntity>& metric_ent
   queue_state_.state = kQueueOpen;
   // TODO(mpercy): Merge LogCache::Init() with its constructor.
   log_cache_.Init(queue_state_.last_appended);
-  local_peer_ = TrackPeer(local_peer_pb_);
 }
 
 void PeerMessageQueue::SetLeaderMode(int64_t committed_index,
@@ -263,12 +259,12 @@ void PeerMessageQueue::SetNonLeaderMode(const RaftConfigPB& active_config) {
   time_manager_->SetNonLeaderMode();
 }
 
-PeerMessageQueue::TrackedPeer* PeerMessageQueue::TrackPeer(const RaftPeerPB& peer_pb) {
+void PeerMessageQueue::TrackPeer(const RaftPeerPB& peer_pb) {
   std::lock_guard<simple_spinlock> lock(queue_lock_);
-  return TrackPeerUnlocked(peer_pb);
+  TrackPeerUnlocked(peer_pb);
 }
 
-PeerMessageQueue::TrackedPeer* PeerMessageQueue::TrackPeerUnlocked(const RaftPeerPB& peer_pb) {
+void PeerMessageQueue::TrackPeerUnlocked(const RaftPeerPB& peer_pb) {
   CHECK(!peer_pb.permanent_uuid().empty()) << SecureShortDebugString(peer_pb);
   CHECK(peer_pb.has_member_type()) << SecureShortDebugString(peer_pb);
   DCHECK(queue_lock_.is_locked());
@@ -291,7 +287,6 @@ PeerMessageQueue::TrackedPeer* PeerMessageQueue::TrackPeerUnlocked(const RaftPee
   // We don't know how far back this peer is, so set the all replicated watermark to
   // 0. We'll advance it when we know how far along the peer is.
   queue_state_.all_replicated_index = 0;
-  return tracked_peer;
 }
 
 void PeerMessageQueue::UntrackPeer(const string& uuid) {
@@ -982,7 +977,8 @@ Status PeerMessageQueue::ReadReplicatedMessages(const OpId& last_op_id, std::vec
   std::vector<ReplicateRefPtr> messages;
   OpId preceding_id;
 
-
+  auto local_peer_uuid_ = local_peer_pb_.permanent_uuid();
+  auto* local_peer_ = peers_map_.find(local_peer_uuid_)->second;
   if (last_op_id.index() >= local_peer_->last_known_committed_index) {
     // Nothing to read
     return Status::OK();

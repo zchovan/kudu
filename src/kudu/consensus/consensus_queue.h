@@ -216,7 +216,7 @@ class PeerMessageQueue {
   void SetNonLeaderMode(const RaftConfigPB& active_config);
 
   // Makes the queue track this peer.
-  TrackedPeer* TrackPeer(const RaftPeerPB& peer_pb);
+  void TrackPeer(const RaftPeerPB& peer_pb);
 
   // Makes the queue untrack this peer.
   void UntrackPeer(const std::string& uuid);
@@ -519,7 +519,7 @@ class PeerMessageQueue {
   // 'preceding_first_op_in_queue_' if the queue is empty.
   const OpId& GetLastOp() const;
 
-  TrackedPeer* TrackPeerUnlocked(const RaftPeerPB& peer_pb);
+  void TrackPeerUnlocked(const RaftPeerPB& peer_pb);
 
   void UntrackPeerUnlocked(const std::string& uuid);
 
@@ -568,7 +568,6 @@ class PeerMessageQueue {
 
   // PB containing identifying information about the local peer.
   const RaftPeerPB local_peer_pb_;
-  const std::string local_peer_uuid_;
 
   // The id of the tablet.
   const std::string tablet_id_;
@@ -577,7 +576,6 @@ class PeerMessageQueue {
 
   // The currently tracked peers.
   PeersMap peers_map_;
-  TrackedPeer* local_peer_ = nullptr;
 
   mutable simple_spinlock queue_lock_; // TODO(todd): rename
 
