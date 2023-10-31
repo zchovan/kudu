@@ -77,17 +77,17 @@ void CDCServiceImpl::GetChanges(const GetChangesRequestPB* req,
     return;
   }
 
-  // CDCProducer cdc_producer(*tablet_replica);
-  // Status status = cdc_producer.GetChanges(*req, resp);
-  // if (PREDICT_FALSE(!status.ok())) {
-  //   // TODO: Map other error statuses to CDCErrorPB.
-  //   SetupErrorAndRespond(
-  //       resp->mutable_error(),
-  //       status,
-  //       status.IsNotFound() ? CDCErrorPB::CHECKPOINT_TOO_OLD : CDCErrorPB::UNKNOWN_ERROR,
-  //       &context);
-  //   return;
-  // }
+   CDCProducer cdc_producer(*tablet_replica);
+   Status status = cdc_producer.GetChanges(*req, resp);
+   if (PREDICT_FALSE(!status.ok())) {
+     // TODO: Map other error statuses to CDCErrorPB.
+     SetupErrorAndRespond(
+         resp->mutable_error(),
+         status,
+         status.IsNotFound() ? CDCErrorPB::CHECKPOINT_TOO_OLD : CDCErrorPB::UNKNOWN_ERROR,
+         context);
+     return;
+   }
 
   context->RespondSuccess();
 }

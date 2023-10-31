@@ -29,10 +29,12 @@
 // #include "kudu/tablet/transaction_participant.h"
 #include "kudu/tserver/tablet_server.h"
 #include "kudu/tserver/ts_tablet_manager.h"
+#include "kudu/gutil/strings/substitute.h"
 
 namespace kudu {
 namespace cdc {
 
+using strings::Substitute;
 using consensus::ReplicateRefPtr;
 // using docdb::PrimitiveValue;
 // using tablet::TransactionParticipant;
@@ -41,8 +43,8 @@ using consensus::ReplicateRefPtr;
 Status CDCProducer::GetChanges(const GetChangesRequestPB& req,
                                GetChangesResponsePB* resp) {
 //   const auto& record = VERIFY_RESULT(GetRecordMetadataForSubscriber(req.subscriber_uuid()));
-  const auto record = GetRecordMetadataForSubscriber(req.subscriber_uuid());
-  KUDU_RETURN_NOT_OK(record.status());
+//  const auto record = GetRecordMetadataForSubscriber(req.subscriber_uuid());
+//  KUDU_RETURN_NOT_OK(record.status().OK());
 
   consensus::OpId from_op_id;
   if (req.has_from_checkpoint()) {
@@ -58,7 +60,7 @@ Status CDCProducer::GetChanges(const GetChangesRequestPB& req,
   for (const auto& msg : messages) {
     switch (msg->get()->op_type()) {
       case consensus::OperationType::WRITE_OP:
-        RETURN_NOT_OK(PopulateWriteRecord(msg, *record, resp));
+        RETURN_NOT_OK(PopulateWriteRecord(msg, resp));
         break;
 
       default:
@@ -71,6 +73,70 @@ Status CDCProducer::GetChanges(const GetChangesRequestPB& req,
       messages.empty() ? from_op_id : messages.back()->get()->id());
   return Status::OK();
 }
+
+std::string get_as_string(const uint8_t *ptr) {
+  const Slice *s = reinterpret_cast<const Slice *>(ptr);
+  const std::string str = strings::Utf8SafeCEscape(s->ToString());
+  return str;
+
+
+}
+
+Status fill_with_data(const ConstContiguousRow &row, KeyValuePairPB* value_pair, int col_idx)
+{
+  const ColumnSchema& col=row.schema()->column(col_idx);
+  value_pair->set_column_id(col.name());
+  auto value = value_pair->mutable_value();
+  const uint8_t *ptr=row.cell_ptr(col_idx);
+  switch (col.type_info()->type()) {
+    case INT32:
+      value->set_int32_value((*reinterpret_cast<const int32_t *>(ptr)));
+      break;
+    case STRING:
+      value->set_string_value(get_as_string(ptr));
+      break;
+    default:
+      return Status::NotSupported(Substitute("Unsopported column type: $0", col.type_info()->type()));
+  }
+  return Status::OK();
+}
+
+Status CDCProducer::PopulateWriteRecord(const consensus::ReplicateRefPtr& write_msg,
+                                        //const CDCRecordMetadata& metadata,
+                                        GetChangesResponsePB* resp) {
+  const auto& batch = write_msg->get()->write_request().row_operations();
+  
+  // TODO replace with CDC stream schema:
+  const auto client_schema = tablet_replica_->tablet()->schema(); 
+  Arena arena(1024);
+  arena.Reset();
+  RowOperationsPBDecoder decoder(&batch, client_schema.get(), client_schema.get(), &arena);
+  std::vector<DecodedRowOperation> ops;
+  Status s = decoder.DecodeOperations<WRITE_OPS>(&ops);
+
+  CDCRecordPB* record = nullptr;
+
+  for (const auto& op : ops) {
+    auto row = ConstContiguousRow(client_schema.get(), op.row_data);
+    record = resp->add_records();
+    // record->set_operation(CDCRecordPB_OperationType_WRITE);
+    //  record->set_time(write_msg->get);
+    for (size_t col_idx = 0; col_idx < row.schema()->num_key_columns(); col_idx++) {
+      KeyValuePairPB* keys = record->add_keys();
+      RETURN_NOT_OK(fill_with_data(row, keys, col_idx));
+    }
+
+    for (size_t col_idx = row.schema()->num_key_columns(); col_idx < row.schema()->num_columns(); col_idx++) {
+      KeyValuePairPB* changes = record->add_changes();
+      RETURN_NOT_OK(fill_with_data(row, changes, col_idx));
+    }
+
+
+  }
+  return Status::OK();
+}
+
+
 
 Result<CDCRecordMetadata> CDCProducer::GetRecordMetadataForSubscriber(
     const std::string& subscriber_uuid) {
@@ -86,14 +152,5 @@ consensus::OpId CDCProducer::GetLastCheckpoint(const std::string& subscriber_uui
   return op_id;
 }
 
-// Populate CDC record corresponding to WAL batch in ReplicateMsg.
-Status CDCProducer::PopulateWriteRecord(const consensus::ReplicateRefPtr& write_msg,
-                                  //  const TxnStatusMap& txn_map,
-                                  const CDCRecordMetadata& metadata,
-                                   GetChangesResponsePB* resp) {
-
-                                    return Status::OK();
-}
-
 } // namespace cdc
-}  // namespace kudu
+} // namespace kudu
