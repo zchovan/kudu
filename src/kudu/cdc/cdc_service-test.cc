@@ -87,10 +87,10 @@ TEST_F(CDCServiceTest, TestGetChanges) {
   ASSERT_TRUE(mini_server_->server()->tablet_manager()->LookupTablet(kTabletId, &tablet));
 
   // Insert test rows
+
   WriteRequestPB write_req;
   WriteResponsePB write_resp;
   ASSERT_OK(SchemaToPB(schema_, write_req.mutable_schema()));
-
   write_req.set_tablet_id(kTabletId);
 
   for (const auto& [k, v] : test_values_) {
@@ -100,8 +100,7 @@ TEST_F(CDCServiceTest, TestGetChanges) {
                    v.int_val_,
                    v.string_val_,
                    write_req.mutable_row_operations());
-  }
-  SleepFor(MonoDelta::FromMilliseconds(1000));
+    }
 
   {
     RpcController controller;
@@ -147,9 +146,6 @@ TEST_F(CDCServiceTest, TestGetChanges) {
     ASSERT_EQ(2, record.changes_size());
 
     // TODO: Can we build on the order????
-    ASSERT_EQ("int_val", record.changes(0).column_id());
-    ASSERT_EQ("", record.changes(0).column_id());
-
     ASSERT_EQ("int_val", record.changes(0).column_id());
     ASSERT_TRUE(record.changes(0).value().has_int32_value());
     ASSERT_EQ(values.int_val_, record.changes(0).value().int32_value());

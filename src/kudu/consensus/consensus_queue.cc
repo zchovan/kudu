@@ -984,7 +984,7 @@ Status PeerMessageQueue::ReadReplicatedMessages(const OpId& last_op_id, std::vec
     return Status::OK();
   }
 
-  Status s = ReadFromLogCache(last_op_id.index(), local_peer_->last_known_committed_index,
+  Status s = ReadFromLogCache(last_op_id.index(), local_peer_->last_known_committed_index + 1  ,
                               FLAGS_consensus_max_batch_size_bytes,
                               local_peer_uuid_, &messages, &preceding_id);
   if (PREDICT_FALSE(!s.ok())) {

@@ -61,7 +61,7 @@ class CDCProducer {
  private:
   // Populate CDC record corresponding to WAL batch in ReplicateMsg.
   Status PopulateWriteRecord(const consensus::ReplicateRefPtr& write_msg,
-                                     const CDCRecordMetadata& metadata,
+                                     //const CDCRecordMetadata& metadata,
                                      GetChangesResponsePB* resp);
 
 
