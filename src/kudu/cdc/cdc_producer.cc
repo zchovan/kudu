@@ -50,7 +50,7 @@ Status CDCProducer::GetChanges(const GetChangesRequestPB& req,
   if (req.has_from_checkpoint()) {
     from_op_id = req.from_checkpoint().op_id();
   } else {
-    from_op_id = GetLastCheckpoint(req.subscriber_uuid());
+    //from_op_id = GetLastCheckpoint(req.subscriber_uuid());
   }
 
 

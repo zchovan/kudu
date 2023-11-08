@@ -131,6 +131,27 @@ class MasterServiceImpl : public MasterServiceIf {
   void TSHeartbeat(const TSHeartbeatRequestPB* req,
                    TSHeartbeatResponsePB* resp,
                    rpc::RpcContext* rpc) override;
+  
+  virtual void CreateCDCStream(
+      const class CreateCDCStreamRequestPB* req,
+      class CreateCDCStreamResponsePB* resp,
+      ::kudu::rpc::RpcContext* context);
+
+  virtual void DeleteCDCStream(
+      const class DeleteCDCStreamRequestPB* req,
+      class DeleteCDCStreamResponsePB* resp,
+      ::kudu::rpc::RpcContext* context);
+
+  virtual void ListCDCStreams(
+      const class ListCDCStreamsRequestPB* req,
+      class ListCDCStreamsResponsePB* resp,
+      ::kudu::rpc::RpcContext* context);
+
+  virtual void GetCDCStream(
+      const class GetCDCStreamRequestPB* req,
+      class GetCDCStreamResponsePB* resp,
+      ::kudu::rpc::RpcContext* context);
+
 
   void GetTabletLocations(const GetTabletLocationsRequestPB* req,
                           GetTabletLocationsResponsePB* resp,

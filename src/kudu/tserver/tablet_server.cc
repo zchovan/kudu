@@ -153,7 +153,7 @@ Status TabletServer::Start() {
   unique_ptr<ServiceIf> consensus_service(new ConsensusServiceImpl(this, tablet_manager_.get()));
   unique_ptr<ServiceIf> tablet_copy_service(new TabletCopyServiceImpl(
       this, tablet_manager_.get()));
-  unique_ptr<ServiceIf> cdc_service(new cdc::CDCServiceImpl(tablet_manager_.get(), metric_entity(), result_tracker()));
+  unique_ptr<ServiceIf> cdc_service(new cdc::CDCServiceImpl(this, opts_.master_addresses, tablet_manager_.get(), metric_entity(), result_tracker()));
 
   RETURN_NOT_OK(RegisterService(std::move(ts_service)));
   RETURN_NOT_OK(RegisterService(std::move(admin_service)));

@@ -521,6 +521,36 @@ void MasterServiceImpl::TSHeartbeat(const TSHeartbeatRequestPB* req,
   rpc->RespondSuccess();
 }
 
+
+void MasterServiceImpl::CreateCDCStream(
+      const class CreateCDCStreamRequestPB* req,
+      class CreateCDCStreamResponsePB* resp,
+      ::kudu::rpc::RpcContext* context) {
+
+}
+
+void MasterServiceImpl::DeleteCDCStream(
+      const class DeleteCDCStreamRequestPB* req,
+      class DeleteCDCStreamResponsePB* resp,
+      ::kudu::rpc::RpcContext* context) {
+
+}
+
+void MasterServiceImpl::ListCDCStreams(
+      const class ListCDCStreamsRequestPB* req,
+      class ListCDCStreamsResponsePB* resp,
+      ::kudu::rpc::RpcContext* context) {
+
+}
+
+void MasterServiceImpl::GetCDCStream(
+      const class GetCDCStreamRequestPB* req,
+      class GetCDCStreamResponsePB* resp,
+      ::kudu::rpc::RpcContext* context) {
+
+}
+
+
 void MasterServiceImpl::GetTabletLocations(const GetTabletLocationsRequestPB* req,
                                            GetTabletLocationsResponsePB* resp,
                                            rpc::RpcContext* rpc) {

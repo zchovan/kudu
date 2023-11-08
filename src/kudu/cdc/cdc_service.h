@@ -30,27 +30,39 @@
 namespace kudu {
 namespace cdc {
 
+class PoorMansAsyncClient;
 using consensus::RaftPeerPB;
 
 
 class CDCServiceImpl : public CDCServiceIf {
  public:
-  CDCServiceImpl(tserver::TSTabletManager* tablet_manager,
+  CDCServiceImpl(tserver::TabletServer* tserver,
+                 const std::vector<HostPort>& masters,
+                 tserver::TSTabletManager* tablet_manager,
                  const scoped_refptr<MetricEntity>& metric_entity,
                  const scoped_refptr<::kudu::rpc::ResultTracker>& result_tracker);
 
   CDCServiceImpl(const CDCServiceImpl&) = delete;
   void operator=(const CDCServiceImpl&) = delete;
 
-  void SetupCDC(const SetupCDCRequestPB* req,
-                SetupCDCResponsePB* resp,
-                rpc::RpcContext* rpc) override;
+  virtual void CreateCDCStream(
+      const class CreateCDCStreamRequestPB* req,
+      class CreateCDCStreamResponsePB* resp,
+      ::kudu::rpc::RpcContext* context) override;
+
+  virtual void DeleteCDCStream(
+      const class DeleteCDCStreamRequestPB* req,
+      class DeleteCDCStreamResponsePB* resp,
+      ::kudu::rpc::RpcContext* context) override;
+
   void ListTablets(const ListTabletsRequestPB *req,
                    ListTabletsResponsePB* resp,
                    rpc::RpcContext* rpc) override;
+
   void GetChanges(const GetChangesRequestPB* req,
                   GetChangesResponsePB* resp,
                   rpc::RpcContext* rpc) override;
+
   void GetCheckpoint(const GetCheckpointRequestPB* req,
                      GetCheckpointResponsePB* resp,
                      rpc::RpcContext* rpc) override;
@@ -109,7 +121,9 @@ class CDCServiceImpl : public CDCServiceIf {
     return replica;
   }
 
+  tserver::TabletServer* tserver_;
   tserver::TSTabletManager* tablet_manager_;
+  std::unique_ptr<PoorMansAsyncClient> client_;
 };
 
 }  // namespace cdc

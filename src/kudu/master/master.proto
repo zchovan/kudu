@@ -1182,6 +1182,51 @@ message UnregisterTServerResponsePB {
   optional MasterErrorPB error = 1;
 }
 
+// ============================================================================
+//  CDC Stream
+// ============================================================================
+
+message CreateCDCStreamRequestPB {
+  optional string table_id = 1;
+}
+
+message CreateCDCStreamResponsePB {
+  optional MasterErrorPB error = 1;
+  optional bytes stream_id = 2;
+}
+
+message DeleteCDCStreamRequestPB {
+  optional bytes stream_id = 1;
+}
+
+message DeleteCDCStreamResponsePB {
+  optional MasterErrorPB error = 1;
+}
+
+message ListCDCStreamsRequestPB {
+  optional string table_id = 1;
+}
+
+message ListCDCStreamsResponsePB {
+  optional MasterErrorPB error = 1;
+  repeated CDCStreamInfoPB streams = 2;
+}
+
+message GetCDCStreamRequestPB {
+  optional bytes stream_id = 1;
+}
+
+message GetCDCStreamResponsePB {
+  optional MasterErrorPB error = 1;
+  optional CDCStreamInfoPB stream = 2;
+}
+
+message CDCStreamInfoPB {
+  optional bytes stream_id = 1;
+  optional bytes table_id = 2;
+  // repeated CDCStreamOptionsPB options = 3;
+}
+
 enum MasterFeatures {
   UNKNOWN_FEATURE = 0;
   // The master supports creating tables with non-covering range partitions.
@@ -1222,6 +1267,20 @@ service MasterService {
   // TS->Master RPCs
   // ------------------------------------------------------------
   rpc TSHeartbeat(TSHeartbeatRequestPB) returns (TSHeartbeatResponsePB) {
+    option (kudu.rpc.authz_method) = "AuthorizeServiceUser";
+  }
+
+  // CDC stream RPCs.
+  rpc CreateCDCStream(CreateCDCStreamRequestPB) returns (CreateCDCStreamResponsePB) {
+    option (kudu.rpc.authz_method) = "AuthorizeServiceUser";
+  }
+  rpc DeleteCDCStream(DeleteCDCStreamRequestPB) returns (DeleteCDCStreamResponsePB) {
+    option (kudu.rpc.authz_method) = "AuthorizeServiceUser";
+  }
+  rpc ListCDCStreams(ListCDCStreamsRequestPB) returns (ListCDCStreamsResponsePB) {
+    option (kudu.rpc.authz_method) = "AuthorizeServiceUser";
+  }
+  rpc GetCDCStream(GetCDCStreamRequestPB) returns (GetCDCStreamResponsePB) {
     option (kudu.rpc.authz_method) = "AuthorizeServiceUser";
   }
 
