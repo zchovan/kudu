@@ -19,6 +19,7 @@
 
 #include <memory>
 #include <chrono>
+#include <thread>
 
 #include "kudu/cdc/cdc_producer.h"
 #include "kudu/common/wire_protocol.h"
@@ -42,6 +43,7 @@ using tserver::TSTabletManager;
 using master::MasterServiceProxy;
 using strings::Substitute;
 using kudu::Status;
+using kudu::rpc::RpcController;
 
 namespace {
 
@@ -56,7 +58,7 @@ class PoorMansAsyncClient {
     }
   }
 
-  Status Call(std::function<Status(kudu::master::MasterServiceProxy&)>& sender) {
+  Status Call(const std::function<Status(kudu::master::MasterServiceProxy&)>& sender) {
     MasterProxyWrapper* current_leader; 
     RETURN_NOT_OK(CheckLeaderStatus(&current_leader));
     // TODO invalidate if not a leader or network error
@@ -70,7 +72,7 @@ class PoorMansAsyncClient {
     MasterProxyWrapper(const HostPort& address, tserver::TabletServer& server) 
       :address_(address), server_(server) {}
 
-    Status Call(std::function<Status(kudu::master::MasterServiceProxy&)>& sender) {
+    Status Call(const std::function<Status(kudu::master::MasterServiceProxy&)>& sender) {
       RETURN_NOT_OK(CheckInitialized());    
       return sender(*proxy_);
     }
@@ -111,7 +113,9 @@ class PoorMansAsyncClient {
     }
     last_lookup_time_ = std::chrono::steady_clock::now();
     // TODO scan for active master
-    current_leader_ = masters_.front().get();      
+    current_leader_ = masters_.front().get(); 
+    *current_leader = current_leader_;
+    return Status::OK();     
   }
 
   void InvalidateCurrentLeader() {
@@ -129,8 +133,22 @@ class PoorMansAsyncClient {
 namespace {
 
 Status MasterCreateStreamId(PoorMansAsyncClient& client, const std::string& table_id, std::string& stream_id) {
-  return {};
+  master::CreateCDCStreamRequestPB req;
+  master::CreateCDCStreamResponsePB resp;
+  RpcController rpc;
+  rpc.set_timeout(MonoDelta::FromMilliseconds(2)); // TODO: timeout???
+  req.set_table_id(table_id);
+  RETURN_NOT_OK(client.Call([&](kudu::master::MasterServiceProxy& proxy) { return proxy.CreateCDCStream(req, &resp, &rpc); }));
+  if (resp.has_error()) {
+    return Status::RuntimeError("Something went wrong");
+  }
+  if (!resp.has_stream_id()) {
+    return Status::RuntimeError("SteamId missing.");
+  }
+  stream_id = resp.stream_id();
+  return Status::OK();
 }
+
 }  // namespace
 
 // using consensus::LeaderStatus;
@@ -162,6 +180,7 @@ void CDCServiceImpl::CreateCDCStream(const class CreateCDCStreamRequestPB* req,
                       Status::InvalidArgument("table_id required"),
                       CDCErrorPB::NOT_RUNNING,
                       context);
+    return;
   }
 
   std::string stream_id;
@@ -170,10 +189,11 @@ void CDCServiceImpl::CreateCDCStream(const class CreateCDCStreamRequestPB* req,
                       s,
                       s.IsNotFound() ? CDCErrorPB::TABLE_NOT_FOUND : CDCErrorPB::INTERNAL_ERROR, 
                       context);
+    return;
   }
-  // TODO alter table to increase wall retention time  
-  resp->set_stream_id(stream_id);
   
+  resp->set_stream_id(stream_id);  
+  context->RespondSuccess();
 }
 
 void CDCServiceImpl::DeleteCDCStream(const class DeleteCDCStreamRequestPB* req,
@@ -200,10 +220,10 @@ void CDCServiceImpl::ListTablets(const ListTabletsRequestPB* req,
 void CDCServiceImpl::GetChanges(const GetChangesRequestPB* req,
                                 GetChangesResponsePB* resp,
                                 RpcContext* context) {
-  if (!CheckOnline(req, resp, context)) {
-    return;
-  }
-  const auto& tablet_replica = GetLeaderTabletReplica(req->tablet_id(), resp, context);
+
+  const auto tablet_replica = GetLeaderTabletReplica(req->tablet_id(), resp, context);
+
+
   if (!tablet_replica.ok()) {
     return;
   }

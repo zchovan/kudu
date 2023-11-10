@@ -83,8 +83,11 @@ SET_KUDU_TEST_LINK_LIBS(
   tserver_test_util
   kudu_client # yb::client::YBTableName
   tablet_test_util
+  mini_cluster
+  kudu_util
+  itest_util
   # kudu_cdc_test_util
   ${KUDU_MIN_TEST_LIBS}
 )
 
-ADD_KUDU_TEST(cdc_service-test)
+ADD_KUDU_TEST(cdc_service-itest)

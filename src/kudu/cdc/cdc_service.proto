@@ -126,7 +126,7 @@ message CDCCheckpointPB {
 }
 
 message GetChangesRequestPB {
-  optional bytes tream_id = 1;
+  optional bytes stream_id = 1;
   // Tablet to get the changes for
   optional bytes tablet_id = 2;
 

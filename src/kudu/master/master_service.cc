@@ -526,7 +526,9 @@ void MasterServiceImpl::CreateCDCStream(
       const class CreateCDCStreamRequestPB* req,
       class CreateCDCStreamResponsePB* resp,
       ::kudu::rpc::RpcContext* context) {
-
+    
+    resp->set_stream_id("fake_stream_id");
+    context->RespondSuccess();
 }
 
 void MasterServiceImpl::DeleteCDCStream(
