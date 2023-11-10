@@ -85,9 +85,10 @@ class CDCiServiceITest : public KuduTest {
     ASSERT_OK(bld.Build(&client_messenger_));
   }
 
-  void StartCluster() {
+  void StartCluster(int num_masters, int num_tservers) {
     InternalMiniClusterOptions opts;
     opts.num_tablet_servers = kNumTabletServers;
+    opts.num_masters = num_masters;
     NO_FATALS(StartCluster(std::move(opts)));
   }
 
@@ -247,7 +248,17 @@ class CDCiServiceITestBasic : public CDCiServiceITest {
  public:
   void SetUp() override {
     CDCiServiceITest::SetUp();
-    StartCluster();
+    StartCluster(1, 3);
+    CreateTestTable();
+    WriteData(test_values_);
+  }
+};
+
+class CDCiServiceITest3Master : public CDCiServiceITest {
+ public:
+  void SetUp() override {
+    CDCiServiceITest::SetUp();
+    StartCluster(3, 3);
     CreateTestTable();
     WriteData(test_values_);
   }
@@ -258,6 +269,22 @@ TEST_F(CDCiServiceITestBasic, CreateStreamId) {
   ASSERT_NO_FATAL_FAILURE(CreateCDCStream(0, kTableName, stream_id));
   ASSERT_EQ("fake_stream_id", stream_id);
 }
+
+TEST_F(CDCiServiceITest3Master, CreateStreamId) {
+  std::string stream_id;
+  ASSERT_NO_FATAL_FAILURE(CreateCDCStream(0, kTableName, stream_id));
+  ASSERT_EQ("fake_stream_id", stream_id);
+
+  int leader_idx;
+  ASSERT_OK(cluster_->GetLeaderMasterIndex(&leader_idx));
+  cluster_->mini_master(leader_idx)->Shutdown();
+  std::this_thread::sleep_for(std::chrono::seconds(1));
+  ASSERT_EVENTUALLY([&] {
+    ASSERT_NO_FATAL_FAILURE(CreateCDCStream(0, kTableName, stream_id));
+    ASSERT_EQ("fake_stream_id", stream_id);
+  });   
+}
+
 
 TEST_F(CDCiServiceITestBasic, GetChangesFromBegining) {
   std::string stream_id;
