@@ -31,6 +31,7 @@
 #include "kudu/gutil/port.h"
 #include "kudu/gutil/strings/substitute.h"
 #include "kudu/util/pb_util.h"
+#include "kudu/consensus/consensus.pb.h"
 
 using kudu::log::Log;
 using kudu::pb_util::SecureShortDebugString;
@@ -38,6 +39,8 @@ using std::shared_ptr;
 using std::string;
 using std::unique_ptr;
 using strings::Substitute;
+
+DECLARE_bool(enable_multi_raft_heartbeat_batcher);
 
 namespace kudu {
 namespace consensus {
@@ -47,14 +50,15 @@ PeerManager::PeerManager(string tablet_id,
                          PeerProxyFactory* peer_proxy_factory,
                          PeerMessageQueue* queue,
                          ThreadPoolToken* raft_pool_token,
-                         scoped_refptr<log::Log> log)
+                         scoped_refptr<log::Log> log,
+                         consensus::MultiRaftManager* multi_raft_manager)
     : tablet_id_(std::move(tablet_id)),
       local_uuid_(std::move(local_uuid)),
       peer_proxy_factory_(peer_proxy_factory),
       queue_(queue),
       raft_pool_token_(raft_pool_token),
-      log_(std::move(log)) {
-}
+      log_(std::move(log)),
+      multi_raft_manager_(multi_raft_manager) {}
 
 PeerManager::~PeerManager() {
   Close();
@@ -74,11 +78,16 @@ void PeerManager::UpdateRaftConfig(const RaftConfigPB& config) {
     }
 
     VLOG(1) << GetLogPrefix() << "Adding remote peer. Peer: " << SecureShortDebugString(peer_pb);
+    MultiRaftHeartbeatBatcherPtr multi_raft_batcher = nullptr;
+    if (multi_raft_manager_) {
+      multi_raft_batcher = multi_raft_manager_->AddOrGetBatcher(peer_pb);
+    }
     shared_ptr<Peer> remote_peer;
     Peer::NewRemotePeer(peer_pb,
                         tablet_id_,
                         local_uuid_,
                         queue_,
+                        multi_raft_batcher,
                         raft_pool_token_,
                         peer_proxy_factory_,
                         &remote_peer);

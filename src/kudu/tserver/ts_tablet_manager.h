@@ -499,6 +499,8 @@ class TSTabletManager : public tserver::TabletReplicaLookupIf {
   // ensures we do not attempt to collect metrics while calling the destructor.
   FunctionGaugeDetacher metric_detacher_;
 
+  std::unique_ptr<consensus::MultiRaftManager> multi_raft_manager_;
+
   DISALLOW_COPY_AND_ASSIGN(TSTabletManager);
 };
 

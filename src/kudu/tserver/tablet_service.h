@@ -22,6 +22,7 @@
 #include <string>
 
 #include "kudu/consensus/consensus.service.h"
+#include "kudu/consensus/consensus.pb.h"
 #include "kudu/gutil/ref_counted.h"
 #include "kudu/tserver/tserver.pb.h"
 #include "kudu/tserver/tserver_admin.service.h"
@@ -255,6 +256,11 @@ class ConsensusServiceImpl : public consensus::ConsensusServiceIf {
   void UpdateConsensus(const consensus::ConsensusRequestPB* req,
                        consensus::ConsensusResponsePB* resp,
                        rpc::RpcContext* context) override;
+
+  void MultiRaftUpdateConsensus(
+      const consensus::MultiRaftConsensusRequestPB* req,
+      consensus::MultiRaftConsensusResponsePB* resp,
+      ::kudu::rpc::RpcContext* context) override;
 
   void RequestConsensusVote(const consensus::VoteRequestPB* req,
                             consensus::VoteResponsePB* resp,

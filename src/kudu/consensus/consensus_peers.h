@@ -49,6 +49,9 @@ namespace consensus {
 class PeerMessageQueue;
 class PeerProxy;
 class PeerProxyFactory;
+class MultiRaftHeartbeatBatcher;
+using MultiRaftHeartbeatBatcherPtr = std::shared_ptr<MultiRaftHeartbeatBatcher>;
+
 
 // A remote peer in consensus.
 //
@@ -118,6 +121,7 @@ class Peer :
                             std::string tablet_id,
                             std::string leader_uuid,
                             PeerMessageQueue* queue,
+                            MultiRaftHeartbeatBatcherPtr multi_raft_batcher,
                             ThreadPoolToken* raft_pool_token,
                             PeerProxyFactory* peer_proxy_factory,
                             std::shared_ptr<Peer>* peer);
@@ -127,6 +131,7 @@ class Peer :
        std::string tablet_id,
        std::string leader_uuid,
        PeerMessageQueue* queue,
+       MultiRaftHeartbeatBatcherPtr multi_raft_batcher,
        ThreadPoolToken* raft_pool_token,
        PeerProxyFactory* peer_proxy_factory);
 
@@ -205,6 +210,10 @@ class Peer :
   //
   // RaftConsensus owns this shared token and is responsible for destroying it.
   ThreadPoolToken* raft_pool_token_;
+
+  // Batcher that currently batches heartbeat requests that are sent by each consensus peer
+  // on a per tserver level
+  MultiRaftHeartbeatBatcherPtr multi_raft_batcher_;
 
   // Repeating timer responsible for scheduling heartbeats to this peer.
   std::shared_ptr<rpc::PeriodicTimer> heartbeater_;

@@ -21,6 +21,8 @@
 #include <string>
 #include <vector>
 
+#include <boost/container_hash/hash_fwd.hpp>
+
 #include "kudu/gutil/atomicops.h"
 #include "kudu/gutil/macros.h"
 #include "kudu/rpc/connection_id.h"
@@ -28,6 +30,7 @@
 #include "kudu/rpc/response_callback.h"
 #include "kudu/util/locks.h"
 #include "kudu/util/net/net_util.h"
+#include "kudu/util/metrics.h"
 #include "kudu/util/status.h"
 
 namespace google {
@@ -43,9 +46,26 @@ class Sockaddr;
 
 namespace rpc {
 
+struct OutboundMethodMetrics {
+  scoped_refptr<Counter> request_bytes;
+  scoped_refptr<Counter> response_bytes;
+};
+
+struct ProxyMetrics {};
+using ProxyMetricsPtr = std::shared_ptr<ProxyMetrics>;
+
+using ProxyMetricsFactory = ProxyMetricsPtr(*)(const scoped_refptr<MetricEntity>& entity);
+
+template <size_t size>
+struct ProxyMetricsImpl : public ProxyMetrics {
+  std::array<OutboundMethodMetrics, size> value;
+};
+
 class Messenger;
 class RpcController;
 class UserCredentials;
+class ProxyContext;
+class Protocol;
 
 // Interface to send calls to a remote service.
 //
@@ -192,6 +212,39 @@ class Proxy {
   mutable Atomic32 is_started_;
 
   DISALLOW_COPY_AND_ASSIGN(Proxy);
+};
+
+using ProxyPtr = std::shared_ptr<Proxy>;
+
+class ProxyCache {
+ public:
+  explicit ProxyCache(ProxyContext* context)
+      : context_(context) {}
+
+  ProxyPtr GetProxy(
+      const HostPort& remote, const Protocol* protocol, const MonoDelta& resolve_cache_timeout);
+
+  ProxyMetricsPtr GetMetrics(const std::string& service_name, ProxyMetricsFactory factory);
+
+ private:
+  typedef std::pair<HostPort, const Protocol*> ProxyKey;
+
+  struct ProxyKeyHash {
+    size_t operator()(const ProxyKey& key) const {
+      size_t result = 0;
+      boost::hash_combine(result, key.first);
+      boost::hash_combine(result, key.second);
+      return result;
+    }
+  };
+
+  ProxyContext* context_;
+
+  std::mutex proxy_mutex_;
+  std::unordered_map<ProxyKey, ProxyPtr, ProxyKeyHash> proxies_ GUARDED_BY(proxy_mutex_);
+
+  std::mutex metrics_mutex_;
+  std::unordered_map<std::string , ProxyMetricsPtr> metrics_ GUARDED_BY(metrics_mutex_);
 };
 
 } // namespace rpc

@@ -179,7 +179,9 @@ Status TabletReplicaTestBase::StartReplica(const ConsensusBootstrapInfo& info) {
                                 scoped_refptr<ResultTracker>(),
                                 log,
                                 prepare_pool_.get(),
-                                dns_resolver_.get());
+                                dns_resolver_.get(),
+                                //todo(zchovan) this probably needs to be not null
+                                nullptr);
 }
 
 Status TabletReplicaTestBase::StartReplicaAndWaitUntilLeader(const ConsensusBootstrapInfo& info) {
@@ -224,7 +226,9 @@ Status TabletReplicaTestBase::RestartReplica(bool reset_tablet) {
                                        scoped_refptr<ResultTracker>(),
                                        log,
                                        prepare_pool_.get(),
-                                       dns_resolver_.get()));
+                                       dns_resolver_.get(),
+                                       // todo(zchovan) this probably needs to be not null
+                                       nullptr));
   // Wait for the replica to be usable.
   return tablet_replica_->consensus()->WaitUntilLeader(kLeadershipTimeout);
 }

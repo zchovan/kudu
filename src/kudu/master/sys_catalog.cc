@@ -481,6 +481,8 @@ Status SysCatalogTable::SetupTablet(
   } while (0)
 
   InitLocalRaftPeerPB();
+  multi_raft_manager_ = std::make_unique<consensus::MultiRaftManager>(master_->messenger(),
+                                                                      master_->dns_resolver());
   scoped_refptr<ConsensusMetadata> cmeta;
   RETURN_NOT_OK(cmeta_manager_->Load(metadata->tablet_id(), &cmeta));
 
@@ -537,7 +539,8 @@ Status SysCatalogTable::SetupTablet(
       /*result_tracker*/nullptr,
       log,
       master_->tablet_prepare_pool(),
-      master_->dns_resolver()), "failed to start system catalog replica");
+      master_->dns_resolver(),
+      multi_raft_manager_.get()), "failed to start system catalog replica");
 
   tablet_replica_->RegisterMaintenanceOps(master_->maintenance_manager());
 
