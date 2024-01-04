@@ -233,6 +233,7 @@ Status RaftConsensus::Start(const ConsensusBootstrapInfo& info,
                             unique_ptr<TimeManager> time_manager,
                             ConsensusRoundHandler* round_handler,
                             const scoped_refptr<MetricEntity>& metric_entity,
+                            MultiRaftManager* multi_raft_manager,
                             MarkDirtyCallback cb) {
   DCHECK(metric_entity);
 
@@ -292,7 +293,8 @@ Status RaftConsensus::Start(const ConsensusBootstrapInfo& info,
                                                        peer_proxy_factory_.get(),
                                                        queue.get(),
                                                        raft_pool_token_.get(),
-                                                       log_));
+                                                       log_,
+                                                       multi_raft_manager));
   unique_ptr<PendingRounds> pending(new PendingRounds(
       LogPrefixThreadSafe(), time_manager_.get()));
 

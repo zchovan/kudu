@@ -103,12 +103,12 @@ set(CONSENSUS_SRCS
   consensus_queue.cc
   leader_election.cc
   log_cache.cc
+  multi_raft_batcher.cc
   peer_manager.cc
   pending_rounds.cc
   quorum_util.cc
   raft_consensus.cc
-  time_manager.cc
-)
+  time_manager.cc)
 
 add_library(consensus ${CONSENSUS_SRCS})
 target_link_libraries(consensus

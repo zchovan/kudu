@@ -647,6 +647,22 @@ void RaftConsensusITest::SetupSingleReplicaTest(TServerDetails** replica_ts) {
   LOG(INFO) << "================================== Cluster setup complete.";
 }
 
+TEST_F(RaftConsensusITest, TestMultiRaftBatching) {
+  vector<string> ts_flags = {
+      // Disable follower eviction to maintain the original intent of this test.
+      "--unlock_experimental_flags=true",
+      "--enable_multi_raft_heartbeat_batcher=true"
+  };
+  NO_FATALS(BuildAndStart(ts_flags));
+
+  InsertTestRowsRemoteThread(FLAGS_client_inserts_per_thread,
+                             FLAGS_client_inserts_per_thread,
+                             FLAGS_client_num_batches_per_thread);
+
+  NO_FATALS(AssertAllReplicasAgree(1));
+
+}
+
 // Test that we can retrieve the permanent uuid of a server running
 // consensus service via RPC.
 TEST_F(RaftConsensusITest, TestGetPermanentUuid) {

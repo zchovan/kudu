@@ -41,6 +41,7 @@
 #include "kudu/consensus/log.h"
 #include "kudu/consensus/log_anchor_registry.h"
 #include "kudu/consensus/metadata.pb.h"
+#include "kudu/consensus/multi_raft_batcher.h"
 #include "kudu/consensus/opid.pb.h"
 #include "kudu/consensus/quorum_util.h"
 #include "kudu/consensus/raft_consensus.h"
@@ -226,7 +227,8 @@ Status TabletReplica::Start(
     scoped_refptr<ResultTracker> result_tracker,
     scoped_refptr<Log> log,
     ThreadPool* prepare_pool,
-    DnsResolver* resolver) {
+    DnsResolver* resolver,
+    kudu::consensus::MultiRaftManager* multi_raft_manager) {
   DCHECK(tablet) << "A TabletReplica must be provided with a Tablet";
   DCHECK(log) << "A TabletReplica must be provided with a Log";
 
@@ -294,6 +296,7 @@ Status TabletReplica::Start(
         std::move(time_manager),
         this,
         metric_entity,
+        multi_raft_manager,
         mark_dirty_clbk_));
 
     std::lock_guard<simple_spinlock> l(lock_);

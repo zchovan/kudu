@@ -20,6 +20,7 @@
 #include <string>
 #include <unordered_map>
 
+#include "kudu/consensus/multi_raft_batcher.h"
 #include "kudu/gutil/macros.h"
 #include "kudu/gutil/ref_counted.h"
 #include "kudu/util/locks.h"
@@ -51,7 +52,8 @@ class PeerManager {
               PeerProxyFactory* peer_proxy_factory,
               PeerMessageQueue* queue,
               ThreadPoolToken* raft_pool_token,
-              scoped_refptr<log::Log> log);
+              scoped_refptr<log::Log> log,
+              MultiRaftManager* multi_raft_manager);
 
   ~PeerManager();
 
@@ -79,6 +81,7 @@ class PeerManager {
   PeerMessageQueue* queue_;
   ThreadPoolToken* raft_pool_token_;
   scoped_refptr<log::Log> log_;
+  MultiRaftManager* multi_raft_manager_;
   PeersMap peers_;
   mutable simple_spinlock lock_;
 
