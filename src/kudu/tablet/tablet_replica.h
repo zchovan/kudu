@@ -33,6 +33,7 @@
 #include "kudu/consensus/log.h"
 #include "kudu/consensus/metadata.pb.h"
 #include "kudu/consensus/raft_consensus.h"
+#include "kudu/consensus/multi_raft_batcher.h"
 #include "kudu/fs/fs_manager.h"
 #include "kudu/gutil/macros.h"
 #include "kudu/gutil/ref_counted.h"
@@ -132,7 +133,8 @@ class TabletReplica : public RefCountedThreadSafe<TabletReplica>,
                scoped_refptr<rpc::ResultTracker> result_tracker,
                scoped_refptr<log::Log> log,
                ThreadPool* prepare_pool,
-               DnsResolver* resolver);
+               DnsResolver* resolver,
+               consensus::MultiRaftManager* multi_raft_manager);
 
   // Synchronously transition this replica to STOPPED state from any other
   // state. This also stops RaftConsensus. If a Stop() operation is already in

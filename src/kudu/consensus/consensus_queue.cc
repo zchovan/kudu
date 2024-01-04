@@ -29,6 +29,7 @@
 #include <utility>
 
 #include <gflags/gflags.h>
+#include <fstream>
 
 #include "kudu/common/common.pb.h"
 #include "kudu/common/timestamp.h"
@@ -1165,7 +1166,8 @@ bool PeerMessageQueue::ResponseFromPeer(const std::string& peer_uuid,
     // Some of these can be eventually removed, but they are handy for now.
     DCHECK(response.status().IsInitialized())
         << "Error: Uninitialized: " << response.InitializationErrorString()
-        << ". Response: "<< SecureShortDebugString(response);
+        << ". Response: "<< SecureShortDebugString(response)
+        << "  status.lastreceived: " << response.status().last_received() << " " << "status.isinit: " ;
     // TODO(mpercy): Include uuid in error messages as well.
     DCHECK(response.has_responder_uuid() && !response.responder_uuid().empty())
         << "Got response from peer with empty UUID";

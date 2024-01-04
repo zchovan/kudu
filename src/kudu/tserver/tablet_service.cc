@@ -32,6 +32,7 @@
 
 #include <gflags/gflags.h>
 #include <glog/logging.h>
+#include <fstream>
 
 #include "kudu/clock/clock.h"
 #include "kudu/common/column_predicate.h"
@@ -378,6 +379,15 @@ bool CheckUuidMatchOrRespond(TabletReplicaLookupIf* tablet_manager,
     return false;
   }
   return true;
+}
+
+
+Status GetConsensus(const scoped_refptr<TabletReplica>& tablet_replica, std::shared_ptr<consensus::RaftConsensus>* consensus) {
+  *consensus = tablet_replica->shared_consensus();
+  if (!consensus) {
+    return Status::ServiceUnavailable("Consensus unavailable. Tablet not running");
+  }
+  return Status::OK();
 }
 
 template<class RespClass>
@@ -1743,6 +1753,64 @@ bool ConsensusServiceImpl::AuthorizeServiceUser(const google::protobuf::Message*
                                                 google::protobuf::Message* /*resp*/,
                                                 RpcContext* rpc) {
   return server_->Authorize(rpc, ServerBase::SUPER_USER | ServerBase::SERVICE_USER);
+}
+
+void ConsensusServiceImpl::MultiRaftUpdateConsensus(
+    const consensus::MultiRaftConsensusRequestPB* req,
+    consensus::MultiRaftConsensusResponsePB* resp,
+    rpc::RpcContext* context) {
+  DVLOG(3) << "Received Batch Consensus Update RPC: " << req->ShortDebugString();
+  // Effectively performs ConsensusServiceImpl::UpdateConsensus for
+  // each ConsensusRequestPB in the batch but does not fail the entire
+  // batch if a single request fails.
+  for (int i = 0; i < req->consensus_request_size(); i++) {
+    // Unfortunately, we have to use const_cast here,
+    // because the protobuf-generated interface only gives us a const request
+    // but we need to be able to move messages out of the request for efficiency.
+    auto consensus_req = const_cast<ConsensusRequestPB*>(&req->consensus_request(i));
+    auto consensus_resp = resp->add_consensus_response();
+//    consensus_resp->mutable_status()->mutable_last_received()->set_term(1);
+//    auto const_status = new kudu::consensus::ConsensusStatusPB();
+//    consensus_resp->mutable_status()->Swap(const_status);
+//    consensus_resp->mutable_status()->IsInitialized()
+
+    CheckUuidMatchOrRespond(tablet_manager_,
+                            "UpdateConsensus",
+                            consensus_req,
+                            consensus_resp,
+                            context);
+
+    scoped_refptr<TabletReplica> replica;
+    LookupRunningTabletReplicaOrRespond(tablet_manager_,
+                                        consensus_req->tablet_id(),
+                                        consensus_resp,
+                                        context,
+                                        &replica);
+
+//    auto tablet = replica.get()->tablet();
+
+    // Submit the update directly to the TabletPeer's Consensus instance.
+    shared_ptr<RaftConsensus> consensus;
+    Status s = GetConsensus(replica, &consensus);
+    if (PREDICT_FALSE(!s.ok())) {
+      consensus_resp->Clear();
+      SetupErrorAndRespond(consensus_resp->mutable_error(), s,
+                           TabletServerErrorPB::UNKNOWN_ERROR, context);
+    }
+
+    DCHECK(consensus_resp->IsInitialized());
+
+    s = consensus->Update(consensus_req, consensus_resp);
+    if (PREDICT_FALSE(!s.ok())) {
+      // Clear the response first, since a partially-filled response could
+      // result in confusing a caller, or in having missing required fields
+      // in embedded optional messages.
+      consensus_resp->Clear();
+      SetupErrorAndRespond(consensus_resp->mutable_error(), s,
+                           TabletServerErrorPB::UNKNOWN_ERROR, context);
+    }
+  }
+  context->RespondSuccess();
 }
 
 void ConsensusServiceImpl::UpdateConsensus(const ConsensusRequestPB* req,

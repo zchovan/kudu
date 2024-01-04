@@ -188,7 +188,9 @@ class TabletCopyTest : public KuduTabletTest,
                                      scoped_refptr<rpc::ResultTracker>(),
                                      log,
                                      prepare_pool_.get(),
-                                     dns_resolver_.get()));
+                                     dns_resolver_.get(),
+                                     // todo(zchovan) check if this is okay as null
+                                     nullptr));
     ASSERT_OK(tablet_replica_->WaitUntilConsensusRunning(MonoDelta::FromSeconds(10)));
     ASSERT_OK(tablet_replica_->consensus()->WaitUntilLeader(MonoDelta::FromSeconds(10)));
   }

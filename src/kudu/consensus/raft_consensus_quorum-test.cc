@@ -241,6 +241,7 @@ class RaftConsensusQuorumTest : public KuduTest {
           std::move(time_manager),
           op_factories_.back().get(),
           metric_entity_,
+          nullptr,
           &DoNothing));
     }
     return Status::OK();

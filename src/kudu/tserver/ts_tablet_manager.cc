@@ -516,6 +516,9 @@ Status TSTabletManager::Init(Timer* start_tablets,
 
   InitLocalRaftPeerPB();
 
+  multi_raft_manager_ = std::make_unique<consensus::MultiRaftManager>(server_->messenger(),
+                                                                      server_->dns_resolver());
+
   vector<scoped_refptr<TabletMetadata>> metas(tablet_ids.size());
 
   // First, load all of the tablet metadata. We do this before we start
@@ -1434,7 +1437,8 @@ void TSTabletManager::OpenTablet(const scoped_refptr<tablet::TabletReplica>& rep
                        server_->result_tracker(),
                        log,
                        server_->tablet_prepare_pool(),
-                       server_->dns_resolver());
+                       server_->dns_resolver(),
+                       multi_raft_manager_.get());
     if (!s.ok()) {
       LOG(ERROR) << LogPrefix(tablet_id) << "Tablet failed to start: "
                  << s.ToString();

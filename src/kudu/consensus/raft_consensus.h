@@ -36,6 +36,7 @@
 #include "kudu/consensus/log.h"
 #include "kudu/consensus/metadata.pb.h"
 #include "kudu/consensus/opid.pb.h"
+#include "kudu/consensus/multi_raft_batcher.h"
 #include "kudu/consensus/ref_counted_replicate.h"
 #include "kudu/gutil/macros.h"
 #include "kudu/gutil/port.h"
@@ -166,6 +167,7 @@ class RaftConsensus : public std::enable_shared_from_this<RaftConsensus>,
                std::unique_ptr<TimeManager> time_manager,
                ConsensusRoundHandler* round_handler,
                const scoped_refptr<MetricEntity>& metric_entity,
+               MultiRaftManager* multi_raft_manager,
                MarkDirtyCallback cb);
 
   // Returns true if RaftConsensus is running.
@@ -906,7 +908,7 @@ class RaftConsensus : public std::enable_shared_from_this<RaftConsensus>,
   std::shared_ptr<rpc::PeriodicTimer> failure_detector_;
 
   // Whether a replica, switched into the leader mode, has successfully
-  // scheduled a NO_OP Raft message to replicate, asserting its leadership in
+  // scheduled a NO_ OP Raft message to replicate, asserting its leadership in
   // the term where it has just become a leader.
   std::atomic<bool> leader_is_ready_;
 

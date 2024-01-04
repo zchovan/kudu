@@ -505,6 +505,8 @@ class TSTabletManager : public tserver::TabletReplicaLookupIf {
   scoped_refptr<Histogram> create_tablet_run_time_;
   scoped_refptr<Histogram> delete_tablet_run_time_;
 
+  std::unique_ptr<consensus::MultiRaftManager> multi_raft_manager_;
+
   DISALLOW_COPY_AND_ASSIGN(TSTabletManager);
 };
 
