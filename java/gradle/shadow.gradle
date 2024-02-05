@@ -46,6 +46,11 @@ configurations.archives.artifacts.removeAll {
   it instanceof ArchivePublishArtifact && it.archiveTask == jar
 }
 
+// https://docs.gradle.org/7.6.4/dsl/org.gradle.api.tasks.bundling.Zip.html#org.gradle.api.tasks.bundling.Zip:zip64
+tasks.shadowJar {
+  setProperty("zip64", true)
+}
+
 // Ensure we always relocate these shaded dependencies to the same
 // location across all modules.
 shadowJar {
@@ -68,6 +73,9 @@ shadowJar {
   relocate "io.micrometer", "org.apache.kudu.shaded.io.micrometer"
   relocate "io.netty", "org.apache.kudu.shaded.io.netty"
   relocate "scopt", "org.apache.kudu.shaded.scopt"
+
+  // Minimize the contents of the created jars
+  minimize()
 }
 
 // ------------------------------------------------------------------
@@ -82,13 +90,13 @@ shadowJar {
 // By default shadow assumes all dependencies are shaded.
 configurations.create("compileUnshaded")
 configurations.shadow.extendsFrom(configurations.compileUnshaded)
-configurations.compile.extendsFrom(configurations.compileUnshaded)
+configurations.implementation.extendsFrom(configurations.compileUnshaded)
 
 // We use afterEvaluate to add additional configuration once all the definitions
 // in the projects build script have been applied
 afterEvaluate {
-  // Ensure compileUnshaded dependencies are included in the pom.
-  [install, uploadArchives].each { task ->
+//   Ensure compileUnshaded dependencies are included in the pom.
+  tasks.withType(Upload) { task ->
     task.repositories.each {
       configure(it.pom.scopeMappings) {
         // The priority value is arbitrary.
