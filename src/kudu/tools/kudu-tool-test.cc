@@ -7389,7 +7389,6 @@ TEST_F(ToolTest, TestHmsIgnoresDifferentMasters) {
   thrift::ClientOptions hms_opts;
   HmsClient hms_client(cluster_->hms()->address(), hms_opts);
   ASSERT_OK(hms_client.Start());
-
   shared_ptr<KuduClient> kudu_client;
   ASSERT_OK(cluster_->CreateClient(nullptr, &kudu_client));
 
@@ -7464,6 +7463,57 @@ TEST_F(ToolTest, TestHmsIgnoresDifferentMasters) {
       Substitute("hms check $0 --noignore-other-clusters", master_addrs_str)));
 }
 
+TEST_F(ToolTest, TestHmsMasterWithDefaultPorts) {
+  ExternalMiniClusterOptions opts;
+  opts.num_masters = 1;
+  opts.master_rpc_addresses =
+  opts.hms_mode = HmsMode::ENABLE_METASTORE_INTEGRATION;
+  NO_FATALS(StartExternalMiniCluster(std::move(opts)));
+
+  thrift::ClientOptions hms_opts;
+  HmsClient hms_client(cluster_->hms()->address(), hms_opts);
+  ASSERT_OK(hms_client.Start());
+
+  shared_ptr<KuduClient> kudu_client;
+  ASSERT_OK(cluster_->CreateClient(nullptr, &kudu_client));
+
+  // Create a Kudu table.
+  ASSERT_OK(CreateKuduTable(kudu_client, "default.table"));
+  vector<string> master_addrs;
+  for (const auto& hp : cluster_->master_rpc_addrs()) {
+    master_addrs.emplace_back(hp.ToString());
+  }
+
+  const string master_addrs_str = JoinStrings(master_addrs, ",");
+  // Do a sanity check that the tool is fine with the existing table.
+  // Note: In the happy case, the tool will not log to stdout or stderr.
+  NO_FATALS(RunActionStdoutNone(Substitute("hms check $0", master_addrs_str)));
+
+  hive::Table hms_table;
+  ASSERT_OK(hms_client.GetTable("default", "table", &hms_table));
+
+  string out;
+  string err;
+  vector<string> master_addrs_no_port;
+  for (const auto& hp : cluster_->master_rpc_addrs()) {
+    master_addrs_no_port.emplace_back(hp.host());
+  }
+  // Change the one of the master's address so that it doesn't have the default port specified.
+  ASSERT_OK(AlterHmsWithReplacedParam(&hms_client, "default", "table",
+                                      HmsClient::kKuduMasterAddrsKey,
+                                      Substitute("$0,$1",
+                                                 master_addrs[0],
+                                                 master_addrs_no_port[1])));
+
+  hive::Table hms_table2;
+  ASSERT_OK(hms_client.GetTable("default", "table", &hms_table2));
+
+  Status s = RunActionStdoutStderrString(
+      Substitute("hms check $0", master_addrs_str), &out, &err);
+  ASSERT_STR_CONTAINS(out, "default.table");
+  NO_FATALS(RunActionStdoutNone(Substitute("hms check $0", master_addrs_str)));
+}
+
 // Make sure that `kudu table delete` works as expected when HMS integration
 // is enabled, keeping the behavior of the tool backward-compatible even after
 // introducing the "table soft-delete" feature.
@@ -7471,6 +7521,7 @@ TEST_F(ToolTest, DropTableHmsEnabled) {
   SKIP_IF_SLOW_NOT_ALLOWED();
   ExternalMiniClusterOptions opts;
   opts.hms_mode = HmsMode::ENABLE_METASTORE_INTEGRATION;
+
   NO_FATALS(StartExternalMiniCluster(std::move(opts)));
   const auto& master_rpc_addr =
       HostPort::ToCommaSeparatedString(cluster_->master_rpc_addrs());

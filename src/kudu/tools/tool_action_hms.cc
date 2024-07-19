@@ -44,6 +44,7 @@
 #include "kudu/hms/hive_metastore_types.h"
 #include "kudu/hms/hms_catalog.h"
 #include "kudu/hms/hms_client.h"
+#include "kudu/master/master.h"
 #include "kudu/tools/tool_action.h"
 #include "kudu/tools/tool_action_common.h"
 #include "kudu/util/net/net_util.h"
@@ -80,6 +81,7 @@ using kudu::client::KuduTableAlterer;
 using kudu::client::sp::shared_ptr;
 using kudu::hms::HmsCatalog;
 using kudu::hms::HmsClient;
+using kudu::master::Master;
 using std::cout;
 using std::endl;
 using std::make_pair;
@@ -414,6 +416,28 @@ Status AnalyzeCatalogs(const string& master_addrs,
     if (hms_catalog_count) {
       *hms_catalog_count = hms_tables.size();
     }
+
+    struct hostport_comparator {
+      bool operator()  (const string& a, const string& b) const {
+        HostPort hp_a;
+        Status s;
+        string ret_a;
+        string ret_b;
+        s = hp_a.ParseString(a, master::Master::kDefaultPort);
+        if (s.ok()) {
+          ret_a = hp_a.ToString();
+        }
+
+        HostPort hp_b;
+        s = hp_b.ParseString(b, master::Master::kDefaultPort);
+        if (s.ok()) {
+          ret_b = hp_b.ToString();
+        }
+
+        return strcasecmp(ret_a.c_str(), ret_b.c_str()) < 0;
+      };
+    };
+
     for (hive::Table& hms_table : hms_tables) {
       // If the addresses in the HMS entry don't overlap at all with the
       // expected addresses, the entry is likely from another Kudu cluster.
@@ -424,9 +448,16 @@ Status AnalyzeCatalogs(const string& master_addrs,
         vector<string> master_intersection;
         if (hms_masters_field) {
           const set<string> hms_master_addrs = Split(*hms_masters_field, ",");
-          std::set_intersection(hms_master_addrs.begin(), hms_master_addrs.end(),
-                                kudu_master_addrs.begin(), kudu_master_addrs.end(),
-                                std::back_inserter(master_intersection));
+          // We have to reorder the set with the default ports, so that we can properly compute the
+          // intersection
+          set<string, hostport_comparator> ordered_hms_master_addrs(hms_master_addrs.begin(),
+                                                                    hms_master_addrs.end());
+          set<string, hostport_comparator> ordered_kudu_master_addrs(kudu_master_addrs.begin(),
+                                                                     kudu_master_addrs.end());
+          std::set_intersection(ordered_hms_master_addrs.begin(), ordered_hms_master_addrs.end(),
+                                ordered_kudu_master_addrs.begin(), ordered_kudu_master_addrs.end(),
+                                std::back_inserter(master_intersection),
+                                hostport_comparator());
         }
         if (master_intersection.empty()) {
           LOG(INFO) << Substitute("Skipping HMS table $0.$1 with different "
