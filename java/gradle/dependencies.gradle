@@ -26,12 +26,14 @@ ext {
 
 versions += [
     async          : "1.4.1",
+    bahir          : "1.1.0",
     checkstyle     : "8.36.1",
     clojure        : "1.10.3",
     clojureToolsCli: "1.0.206",
     commonsIo      : "2.11.0",
     errorProne     : "2.3.3",
     errorProneJavac: "9+181-r4173-1",
+    flink          : "1.19.1",
     gradle         : "7.6.4",
     guava          : "32.1.1-jre",
     hadoop         : "3.3.1",
@@ -62,6 +64,7 @@ versions += [
     spark2         : "2.4.8",
     spark          : "3.2.4",
     spotBugs       : "4.1.1",
+    testcontainers : "1.20.3",
     yetus          : "0.13.0"
 ]
 
@@ -90,6 +93,12 @@ libs += [
     commonsIo            : "commons-io:commons-io:$versions.commonsIo",
     errorProne           : "com.google.errorprone:error_prone_core:$versions.errorProne",
     errorProneJavac      : "com.google.errorprone:javac:$versions.errorProneJavac",
+    flinkClients         : "org.apache.flink:flink-clients:$versions.flink",
+    flinkConnectorBase   : "org.apache.flink:flink-connector-base:$versions.flink",
+    flinkCore            : "org.apache.flink:flink-core:$versions.flink",
+    flinkDist            : "org.apache.flink:flink-dist:$versions.flink",
+    flinkKuduConnector   : "org.apache.bahir:flink-connector-kudu_2.11:$versions.bahir",
+    flinkStreamingJava   : "org.apache.flink:flink-streaming-java:$versions.flink",
     guava                : "com.google.guava:guava:$versions.guava",
     hadoopClient         : "org.apache.hadoop:hadoop-client:$versions.hadoop",
     hadoopCommon         : "org.apache.hadoop:hadoop-common:$versions.hadoop",
@@ -138,5 +147,6 @@ libs += [
     sparkCore            : "org.apache.spark:spark-core_$versions.scalaBase:$versions.spark",
     sparkSql             : "org.apache.spark:spark-sql_$versions.scalaBase:$versions.spark",
     sparkSqlTest         : "org.apache.spark:spark-sql_$versions.scalaBase:$versions.spark:tests",
+    testcontainers       : "org.testcontainers:testcontainers:$versions.testcontainers",
     yetusAnnotations     : "org.apache.yetus:audience-annotations:$versions.yetus"
 ]
