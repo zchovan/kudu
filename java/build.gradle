@@ -36,6 +36,11 @@ allprojects {
   repositories {
     mavenCentral()
     mavenLocal()
+    // TODO(zchovan): remove this, once the kudu connector is published upstream
+    // temporarily add downstream nexus
+    maven() {
+      url = uri("https://nexus-private.infra.cloudera.com/nexus/")
+    }
   }
 
   // Read the version.txt file to set the project version

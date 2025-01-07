@@ -1,7 +1,5 @@
 package org.apache.kudu.replication;
 
-import org.apache.kudu.Schema;
-import org.apache.kudu.client.CreateTableOptions;
 import org.apache.kudu.client.KuduClient;
 import org.apache.kudu.test.KuduTestHarness;
 import org.junit.Before;
@@ -12,11 +10,14 @@ import org.slf4j.LoggerFactory;
 
 import java.util.*;
 
+import static org.apache.kudu.test.ClientTestUtil.createTableWithOneThousandRows;
 import static org.apache.kudu.test.ClientTestUtil.getBasicSchema;
+import static org.apache.kudu.test.KuduTestHarness.DEFAULT_SLEEP;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
-public class TestReplicationHarness {
-    private static final Logger LOG = LoggerFactory.getLogger(TestReplicationHarness.class);
+public class TestReplication {
+    private static final Logger LOG = LoggerFactory.getLogger(TestReplication.class);
     private static final String TABLE_NAME = "replication_test_table";
 
     @Rule
@@ -29,16 +30,22 @@ public class TestReplicationHarness {
 
     @Before
     public void setup()  {
-        CreateTableOptions builder = new CreateTableOptions().setNumReplicas(3);
-        Schema basicSchema = getBasicSchema();
-
         this.sourceClient = sourceHarness.getClient();
         this.sinkClient = sinkHarness.getClient();
-
     }
 
     @Test
-    public void BenchmarkReplicationScenario() {
+    public void TestBasicReplication() {
+        //Setup source table
+        try {
+            createTableWithOneThousandRows(
+                    this.sourceHarness.getAsyncClient(), TABLE_NAME, 32 * 1024, DEFAULT_SLEEP);
+        } catch (Exception e) {
+            e.printStackTrace();
+            LOG.error(e.getMessage());
+            fail(e.getMessage());
+        }
+
         ReplicationJobConfig config = new ReplicationJobConfig();
 
         config.setSourceMasterAddresses(Arrays.asList(sourceHarness.getMasterAddressesAsString().split(",")));

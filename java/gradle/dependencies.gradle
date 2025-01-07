@@ -26,7 +26,7 @@ ext {
 
 versions += [
     async          : "1.4.1",
-    bahir          : "1.1.0",
+    bahir          : "2.0-SNAPSHOT",
     checkstyle     : "8.36.1",
     clojure        : "1.10.3",
     clojureToolsCli: "1.0.206",
@@ -97,7 +97,7 @@ libs += [
     flinkConnectorBase   : "org.apache.flink:flink-connector-base:$versions.flink",
     flinkCore            : "org.apache.flink:flink-core:$versions.flink",
     flinkDist            : "org.apache.flink:flink-dist:$versions.flink",
-    flinkKuduConnector   : "org.apache.bahir:flink-connector-kudu_2.11:$versions.bahir",
+    flinkKuduConnector   : "org.apache.flink:flink-connector-kudu:$versions.bahir",
     flinkStreamingJava   : "org.apache.flink:flink-streaming-java:$versions.flink",
     guava                : "com.google.guava:guava:$versions.guava",
     hadoopClient         : "org.apache.hadoop:hadoop-client:$versions.hadoop",

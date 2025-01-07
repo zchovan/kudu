@@ -22,10 +22,14 @@ import org.apache.flink.api.java.utils.ParameterTool;
 import java.util.ArrayList;
 import java.util.Collections;
 
+/**
+ * This class is used to submit Kudu Replication Jobs into a Flink Cluster.
+ */
 public class ReplicationJob {
     static ReplicationJobConfig config;
 
     public static void main(String[] args) throws Exception {
+        // Read parameters from standard args, then convert them into a ReplicationJobConfig object.
         ParameterTool parameters = ParameterTool.fromArgs(args);
 
         config.setSourceMasterAddresses(new ArrayList<>(
