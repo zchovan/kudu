@@ -58,4 +58,27 @@ public class TestReplication {
         assertTrue(true);
     }
 
+    @Test
+    @KuduTestHarness.EnableKerberos
+    public void TestReplicationWithKerberos() {
+        try {
+            createTableWithOneThousandRows(
+                    this.sourceHarness.getAsyncClient(), TABLE_NAME, 32 * 1024, DEFAULT_SLEEP);
+        } catch (Exception e) {
+            e.printStackTrace();
+            LOG.error(e.getMessage());
+            fail(e.getMessage());
+        }
+
+        ReplicationJobConfig config = new ReplicationJobConfig();
+
+        config.setSourceMasterAddresses(Arrays.asList(sourceHarness.getMasterAddressesAsString().split(",")));
+        config.setSinkMasterAddresses(Arrays.asList(sinkHarness.getMasterAddressesAsString().split(",")));
+        config.setTableName(TABLE_NAME);
+
+        ReplicationJobExecutor executor = new ReplicationJobExecutor(config);
+        executor.runJob();
+
+        assertTrue(true);
+    }
 }

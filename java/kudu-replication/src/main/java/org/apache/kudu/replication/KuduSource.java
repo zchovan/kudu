@@ -20,11 +20,16 @@ package org.apache.kudu.replication;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
+import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.functions.source.RichSourceFunction;
 import org.apache.kudu.client.*;
 import org.apache.kudu.util.HybridTimeUtil;
 
+/**
+ * Flink Source class for Kudu.
+ */
+@PublicEvolving
 public class KuduSource extends RichSourceFunction<String> {
     private final List<String> kuduMasters;
     private final String tableName;

@@ -18,16 +18,23 @@
 package org.apache.kudu.replication;
 
 import org.apache.flink.api.java.utils.ParameterTool;
+import org.apache.flink.connector.kudu.sink.KuduSink;
 
 import java.util.ArrayList;
 import java.util.Collections;
 
 /**
- * This class is used to submit Kudu Replication Jobs into a Flink Cluster.
+ * This class is used to submit Kudu Replication Jobs into a Flink Cluster. This is a wrapper for convenience.
  */
 public class ReplicationJob {
     static ReplicationJobConfig config;
 
+    /**
+     * Generic entry point of the replication job.
+     *
+     * @param args
+     * @throws Exception
+     */
     public static void main(String[] args) throws Exception {
         // Read parameters from standard args, then convert them into a ReplicationJobConfig object.
         ParameterTool parameters = ParameterTool.fromArgs(args);

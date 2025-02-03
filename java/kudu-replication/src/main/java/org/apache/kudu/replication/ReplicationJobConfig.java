@@ -19,6 +19,9 @@ package org.apache.kudu.replication;
 
 import java.util.List;
 
+/**
+ * A configuration object for ReplicationJobs used for the Kudu Flink based replication.
+ */
 public class ReplicationJobConfig {
     private List<String> sourceMasterAddresses;
     private List<String> sinkMasterAddresses;
@@ -28,20 +31,32 @@ public class ReplicationJobConfig {
         return sourceMasterAddresses;
     }
 
+    /**
+     * @param sourceMasterAddresses
+     */
     public void setSourceMasterAddresses(List<String> sourceMasterAddresses) {
         this.sourceMasterAddresses = sourceMasterAddresses;
     }
 
+    /**
+     * @return List of master addresses in host:port format.
+     */
     public List<String> getSinkMasterAddresses() {
         return sinkMasterAddresses;
     }
 
+    /**
+     * @param sinkMasterAddresses
+     */
     public void setSinkMasterAddresses(List<String> sinkMasterAddresses) {
         this.sinkMasterAddresses = sinkMasterAddresses;
     }
 
+    /**
+     * @return Name of the table the configuration is created for.
+     */
     public String getTableName() {
-        return tableName;
+        return this.tableName;
     }
 
     public void setTableName(String tableName) {
