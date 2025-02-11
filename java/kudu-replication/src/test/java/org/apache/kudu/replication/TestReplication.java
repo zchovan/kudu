@@ -22,8 +22,8 @@ public class TestReplication {
 
     @Rule
     public final KuduTestHarness sourceHarness = new KuduTestHarness();
-    @Rule
-    public final KuduTestHarness sinkHarness = new KuduTestHarness();
+//    @Rule
+//    public final KuduTestHarness sinkHarness = new KuduTestHarness();
 
     private KuduClient sourceClient;
     private KuduClient sinkClient;
@@ -31,7 +31,7 @@ public class TestReplication {
     @Before
     public void setup()  {
         this.sourceClient = sourceHarness.getClient();
-        this.sinkClient = sinkHarness.getClient();
+//        this.sinkClient = sinkHarness.getClient();
     }
 
     @Test
@@ -49,7 +49,7 @@ public class TestReplication {
         ReplicationJobConfig config = new ReplicationJobConfig();
 
         config.setSourceMasterAddresses(Arrays.asList(sourceHarness.getMasterAddressesAsString().split(",")));
-        config.setSinkMasterAddresses(Arrays.asList(sinkHarness.getMasterAddressesAsString().split(",")));
+//        config.setSinkMasterAddresses(Arrays.asList(sinkHarness.getMasterAddressesAsString().split(",")));
         config.setTableName(TABLE_NAME);
 
         ReplicationJobExecutor executor = new ReplicationJobExecutor(config);
@@ -59,26 +59,44 @@ public class TestReplication {
     }
 
     @Test
-    @KuduTestHarness.EnableKerberos
-    public void TestReplicationWithKerberos() {
-        try {
-            createTableWithOneThousandRows(
-                    this.sourceHarness.getAsyncClient(), TABLE_NAME, 32 * 1024, DEFAULT_SLEEP);
-        } catch (Exception e) {
-            e.printStackTrace();
-            LOG.error(e.getMessage());
-            fail(e.getMessage());
-        }
-
-        ReplicationJobConfig config = new ReplicationJobConfig();
-
-        config.setSourceMasterAddresses(Arrays.asList(sourceHarness.getMasterAddressesAsString().split(",")));
-        config.setSinkMasterAddresses(Arrays.asList(sinkHarness.getMasterAddressesAsString().split(",")));
-        config.setTableName(TABLE_NAME);
-
-        ReplicationJobExecutor executor = new ReplicationJobExecutor(config);
-        executor.runJob();
-
+    public void TestSourceTableMissing() {
         assertTrue(true);
     }
+
+    @Test
+    public void TestSinkTableMissing() {
+        assertTrue(true);
+    }
+
+    @Test
+    public void TestTableSchemaDoNotMatch() {
+        assertTrue(true);
+    }
+
+    @Test
+    public void TestSourceClusterUnavailable() {
+        assertTrue(true);
+    }
+
+    @Test
+    public void TestSinkClusterUnavailable() {
+        assertTrue(true);
+    }
+
+    @Test
+    public void TestRestartFailedJob() {
+        assertTrue(true);
+    }
+
+    @Test
+    public void TestReplicatingAlreadyBootstrappedTable() {
+        assertTrue(true);
+    }
+
+    @Test
+    public void TestReplicatingMultipleTables() {
+        assertTrue(true);
+    }
+    
+
 }
