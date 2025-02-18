@@ -295,9 +295,9 @@ public class RemoteTablet implements Comparable<RemoteTablet> {
   }
 
   List<ServerInfo> getTabletServersCopy() {
-    List<ServerInfo> results = new ArrayList<>();
+    List<ServerInfo> results;
     synchronized (tabletServers) {
-      results.addAll(tabletServers.values());
+      results = new ArrayList<>(tabletServers.values());
     }
     return results;
   }

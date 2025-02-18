@@ -2774,7 +2774,7 @@ public class AsyncKuduClient implements AutoCloseable {
   private static boolean isMasterTable(String tableId) {
     // Checking that it's the same instance so there's absolutely no chance of confusing the master
     // 'table' for a user one.
-    return MASTER_TABLE_NAME_PLACEHOLDER == tableId;
+    return MASTER_TABLE_NAME_PLACEHOLDER.equals(tableId);
   }
 
   /**

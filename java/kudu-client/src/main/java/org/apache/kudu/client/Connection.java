@@ -636,8 +636,8 @@ class Connection extends SimpleChannelInboundHandler<Object> {
         .append(channel)
         .append(", uuid=")
         .append(serverInfo.getUuid());
-    int queuedMessagesNum = 0;
-    int inflightMessagesNum = 0;
+    int queuedMessagesNum;
+    int inflightMessagesNum;
     lock.lock();
     try {
       queuedMessagesNum = queuedMessages == null ? 0 : queuedMessages.size();

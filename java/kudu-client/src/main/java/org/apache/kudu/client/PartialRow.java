@@ -111,6 +111,7 @@ public class PartialRow {
     this.rowAlloc = row.rowAlloc.clone();
     this.columnsBitSet = (BitSet) row.columnsBitSet.clone();
     this.nullsBitSet = row.nullsBitSet == null ? null : (BitSet) row.nullsBitSet.clone();
+    this.frozen = row.frozen;
   }
 
   /**

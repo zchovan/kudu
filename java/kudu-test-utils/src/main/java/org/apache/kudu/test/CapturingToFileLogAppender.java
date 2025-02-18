@@ -27,6 +27,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.Writer;
+import java.nio.file.Files;
 import java.util.Random;
 import java.util.zip.GZIPOutputStream;
 
@@ -89,7 +90,7 @@ public class CapturingToFileLogAppender extends AbstractAppender implements Auto
         os.close();
       }
     } catch (Throwable t) {
-      outputFile.delete();
+      Files.delete(outputFile.toPath());
       throw t;
     }
 
@@ -126,10 +127,12 @@ public class CapturingToFileLogAppender extends AbstractAppender implements Auto
       }
       outputFileWriter = null;
     }
-    if (outputFile != null) {
-      outputFile.delete();
-      outputFile = null;
+    try {
+      Files.deleteIfExists(outputFile.toPath());
+    } catch (final IOException ioe) {
+      // ignored
     }
+    outputFile = null;
   }
 
   @Override

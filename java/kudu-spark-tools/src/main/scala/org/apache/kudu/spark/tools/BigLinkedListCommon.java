@@ -177,7 +177,7 @@ public class BigLinkedListCommon {
 
     public void nextBytes(final byte[] bytes) {
       int i = bytes.length;
-      int n = 0;
+      int n;
       while (i != 0) {
         n = Math.min(i, 8);
         for (long bits = nextLong(); n-- != 0; bits >>>= 8) {

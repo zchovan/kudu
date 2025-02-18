@@ -365,9 +365,8 @@ public class SchemaGenerator {
      * @return this instance
      */
     public SchemaGeneratorBuilder excludeTypes(Type... types) {
-      List<Type> includedTypes = new ArrayList<>();
-      // Add all possible types.
-      includedTypes.addAll(Arrays.asList(Type.values()));
+        // Add all possible types.
+        List<Type> includedTypes = new ArrayList<>(Arrays.asList(Type.values()));
       // Remove the excluded types.
       for (Type type : types) {
         includedTypes.remove(type);

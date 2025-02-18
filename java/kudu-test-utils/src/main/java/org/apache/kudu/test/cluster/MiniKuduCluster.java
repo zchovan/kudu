@@ -35,6 +35,7 @@ import java.security.Security;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
@@ -246,7 +247,7 @@ public final class MiniKuduCluster implements AutoCloseable {
     // Set up the location mapping command flag if there is location info.
     if (!locationInfo.isEmpty()) {
       List<String> locationMappingCmd = new ArrayList<>();
-      locationMappingCmd.add(getClass().getResource("/assign-location.py").getFile());
+      locationMappingCmd.add(Objects.requireNonNull(getClass().getResource("/assign-location.py")).getFile());
       String locationMappingCmdPath =
           Paths.get(clusterRoot, "location-assignment.state").toString();
       locationMappingCmd.add("--state_store=" + locationMappingCmdPath);

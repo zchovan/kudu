@@ -250,7 +250,7 @@ public class KuduTransaction implements AutoCloseable {
       Preconditions.checkState(isInFlight, ERRMSG_TXN_NOT_OPEN);
     }
 
-    AsyncKuduSession session = null;
+    AsyncKuduSession session;
     synchronized (isCommitStartedSync) {
       Preconditions.checkState(!isCommitStarted, "commit already started");
       session = client.newTransactionalSession(txnId);

@@ -40,7 +40,7 @@ import org.apache.kudu.util.TimestampUtil;
 public abstract class RowResult {
 
   protected static final int INDEX_RESET_LOCATION = -1;
-  protected int index = INDEX_RESET_LOCATION;
+  protected int index;
 
   protected final Schema schema;
 
