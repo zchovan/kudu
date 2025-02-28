@@ -25,6 +25,7 @@ ext {
 }
 
 versions += [
+    annotations         : "6.0.53",
     assertj             : "3.27.3",
     async               : "1.4.1",
     checkstyle          : "8.36.1",
@@ -40,7 +41,7 @@ versions += [
     hadoop              : "3.4.1",
     hamcrest            : "3.0",
     hdrhistogram        : "2.2.2",
-    hive                : "4.1.0",
+    hive                 : "4.1.0",
     httpClient          : "4.5.14",
     jacoco              : "0.8.8",
     jepsen              : "0.1.5",
@@ -73,13 +74,6 @@ if (gradle.gradleVersion != versions.gradle) {
   logger.warn("Using gradle version $gradle.gradleVersion (Build defines $versions.gradle)")
 }
 
-// If the `spark2` property is passed, override the `spark` and `scala` version
-// to use the `spark2` and `scala211` versions.
-if (propertyExists("spark2")) {
-  versions["spark"] = "$versions.spark2"
-  versions["scala"] = "$versions.scala211"
-}
-
 // Add base Scala version
 versions["scalaBase"] = versions.scala.substring(0, versions.scala.lastIndexOf("."))
 
@@ -88,6 +82,7 @@ versions["sparkBase"] = versions.spark.substring(0, versions.spark.indexOf("."))
 
 libs += [
     assertj              : "org.assertj:assertj-core:$versions.assertj",
+    annotations          : "org.apache.tomcat:annotations-api:$versions.annotations",
     async                : "com.stumbleupon:async:$versions.async",
     clojure              : "org.clojure:clojure:$versions.clojure",
     clojureToolsCli      : "org.clojure:tools.cli:$versions.clojureToolsCli",
