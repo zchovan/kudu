@@ -19,6 +19,7 @@ apply from: "$rootDir/gradle/protobuf.gradle"
 
 dependencies {
   implementation libs.protobufJava
+  implementation "org.apache.tomcat:annotations-api:6.0.53"
 }
 
 // Add protobuf files to the proto source set.

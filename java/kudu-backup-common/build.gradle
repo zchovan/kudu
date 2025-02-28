@@ -32,6 +32,8 @@ dependencies {
 
   implementation libs.yetusAnnotations
 
+  implementation "org.apache.tomcat:annotations-api:6.0.53"
+
   testImplementation project(path: ":kudu-test-utils", configuration: "shadow")
   testImplementation libs.junit
   testImplementation libs.log4jApi
