@@ -33,6 +33,7 @@ import org.apache.flink.connector.kudu.connector.reader.KuduReader;
 import org.apache.flink.connector.kudu.connector.reader.KuduReaderConfig;
 import org.apache.flink.connector.kudu.connector.reader.KuduReaderIterator;
 import org.apache.flink.connector.kudu.connector.writer.AbstractSingleOperationMapper;
+import org.apache.flink.connector.kudu.connector.writer.KuduOperationMapper;
 import org.apache.flink.connector.kudu.connector.writer.KuduWriterConfig;
 import org.apache.flink.connector.kudu.connector.writer.RowDataUpsertOperationMapper;
 import org.apache.flink.connector.kudu.connector.writer.RowOperationMapper;
@@ -50,6 +51,9 @@ import org.apache.flink.types.Row;
 import org.apache.kudu.ColumnSchema;
 import org.apache.kudu.Type;
 import org.apache.kudu.client.CreateTableOptions;
+import org.apache.kudu.client.KuduTable;
+import org.apache.kudu.client.Operation;
+import org.apache.kudu.client.PartialRow;
 import org.apache.kudu.shaded.com.google.common.collect.Lists;
 
 import java.util.*;
@@ -100,8 +104,8 @@ class ReplicationJobExecutor {
 
     // TODO: figure out the mechanism to get this auto populated
     // for now just got the column names hardcoed ~.~
-    private RowOperationMapper getRowOperationMapper() {
-        return new RowOperationMapper(new String[]{"key", "column1_i", "column2_i", "column3_s", "column4_b"}, AbstractSingleOperationMapper.KuduOperation.UPSERT);
+    private KuduOperationMapper getRowOperationMapper() {
+        return new CustomAbstractSingleOperationMapper(CustomAbstractSingleOperationMapper.KuduOperation.UPSERT);
 
     }
 
@@ -116,3 +120,5 @@ class ReplicationJobExecutor {
     }
 
 }
+
+
