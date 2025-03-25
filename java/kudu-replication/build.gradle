@@ -18,7 +18,7 @@
 apply from: "$rootDir/gradle/shadow.gradle"
 
 dependencies {
-    implementation libs.flinkKuduConnector
+    implementation libs.flinkConnectorKudu
     implementation libs.flinkCore
     implementation libs.flinkStreamingJava
     implementation libs.flinkClients
