@@ -18,6 +18,7 @@
 package org.apache.kudu.replication;
 
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.api.connector.source.Source;
@@ -36,7 +37,9 @@ import org.apache.flink.connector.kudu.connector.writer.KuduWriterConfig;
 import org.apache.flink.connector.kudu.connector.writer.RowDataUpsertOperationMapper;
 import org.apache.flink.connector.kudu.connector.writer.RowOperationMapper;
 import org.apache.flink.connector.kudu.sink.KuduSink;
+import org.apache.flink.connector.kudu.source.KuduSource;
 import org.apache.flink.connector.kudu.sink.KuduSinkBuilder;
+import org.apache.flink.connector.kudu.source.KuduSourceBuilder;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.catalog.Column;
@@ -65,63 +68,51 @@ class ReplicationJobExecutor {
     /**
      * Executes the actual business logic of the replication.
      */
-    public void runJob() {
+    public void runJob() throws Exception {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        KuduTableInfo tableInfo = KuduTableInfo.forTable(config.getTableName());
+
+        KuduSink<Row> kuduSink = new KuduSinkBuilder<Row>()
+                .setWriterConfig(getWriterConfig())
+                .setTableInfo(getTableInfo())
+                .setOperationMapper(getRowOperationMapper())
+                .build();
+
+        KuduSource<Row> kuduSource = new KuduSourceBuilder<Row>()
+            .setReaderConfig(getReaderConfig())
+            .setTableInfo(getTableInfo())
+            .setRowResultConverter(new RowResultRowConverter())
+            .build();
+
+        env.fromSource(kuduSource, WatermarkStrategy.noWatermarks(), "KuduSource")
+                .returns(TypeInformation.of(Row.class))
+                .sinkTo(kuduSink);
 
 
+        env.execute("Kudu Flink job");
 
+    }
 
-        KuduReaderConfig readerConfig =
-                KuduReaderConfig.Builder
-                        .setMasters(String.join(",", config.getSinkMasterAddresses()))
-                        .build();
+    private KuduWriterConfig getWriterConfig() {
+        return KuduWriterConfig.Builder
+            .setMasters(String.join(",", config.getSinkMasterAddresses()))
+            .build();
+    }
 
-        // TODO(zchovan): replace this with new implementation, when available
-        KuduSource source = new KuduSource(config.getSourceMasterAddresses(), config.getTableName());
+    // TODO: figure out the mechanism to get this auto populated
+    // for now just got the column names hardcoed ~.~
+    private RowOperationMapper getRowOperationMapper() {
+        return new RowOperationMapper(new String[]{"key", "column1_i", "column2_i", "column3_s", "column4_b"}, AbstractSingleOperationMapper.KuduOperation.UPSERT);
 
-        KuduWriterConfig writerConfig =
-                KuduWriterConfig.Builder
-                        .setMasters(String.join(",", config.getSinkMasterAddresses()))
-                        .setStrongConsistency()
-                        .build();
+    }
 
+    private KuduReaderConfig getReaderConfig() {
+        return KuduReaderConfig.Builder
+                .setMasters(String.join(",", config.getSourceMasterAddresses()))
+                .build();
+    }
 
-        RowOperationMapper operationMapper = new RowOperationMapper(
-                tableInfo.getSchema()
-                        .getColumns()
-                        .stream()
-                        .map(c -> c.getName())
-                        .toArray(size -> new String[size]), AbstractSingleOperationMapper.KuduOperation.UPSERT);
-
-
-        KuduSink<Row> sink =
-                KuduSink.<Row>builder()
-                        .setTableInfo(tableInfo)
-                        .setOperationMapper(operationMapper)
-                        .setWriterConfig(writerConfig)
-                        .build();
-
-        env.fromSource(source)
-                .sinkTo(sink)
-                .execute();
-        // 1. Establish connection to both source and sink clusters. Fail the replication
-        // job early if there are any problems (e.g. connectivity, auth).
-        // Check that the table(s) to be replicated do exist on the source and sink clusters.
-        // If either is missing the job fails.
-
-        // 3. Check if the table(s) have been bootstrapped (the target table is not empty).
-
-        // 4a. If bootstrapping is needed, start a full replication.
-
-        // 4b. If bootstrapping is not needed, start from the latest replicated timestamp.
-
-        // 5. If the replication was successful, update and persist the latest replicated timestamp.
-
-
-
-
-
+    private KuduTableInfo getTableInfo() {
+        return KuduTableInfo.forTable(config.getTableName());
     }
 
 }
