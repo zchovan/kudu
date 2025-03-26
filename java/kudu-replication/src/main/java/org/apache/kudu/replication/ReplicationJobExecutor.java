@@ -80,12 +80,7 @@ class ReplicationJobExecutor {
      */
     public void runJob() throws Exception {
 
-        KuduClient sinkClient = new KuduClient.KuduClientBuilder(String.join(",", config.getSinkMasterAddresses())).build();
-        KuduClient sourceClient = new KuduClient.KuduClientBuilder(String.join(",", config.getSourceMasterAddresses())).build();
-        if (!sinkClient.tableExists(config.getTableName())) {
-            Schema schema = sourceClient.openTable(config.getTableName()).getSchema();
-            sinkClient.createTable(config.getTableName(), schema, new CustomCreateTableOptions(config).getCreateTableOptions());
-        }
+        ReplicationTableInitializer.createTableIfNotExists(config);
 
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         KuduSink<Row> kuduSink = new KuduSinkBuilder<Row>()
