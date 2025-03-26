@@ -17,12 +17,13 @@
 
 package org.apache.kudu.replication;
 
+import java.io.Serializable;
 import java.util.List;
 
 /**
  * A configuration object for ReplicationJobs used for the Kudu Flink based replication.
  */
-public class ReplicationJobConfig {
+public class ReplicationJobConfig implements Serializable {
     private List<String> sourceMasterAddresses;
     private List<String> sinkMasterAddresses;
     private String tableName;

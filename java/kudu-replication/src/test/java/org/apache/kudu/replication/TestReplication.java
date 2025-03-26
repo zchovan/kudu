@@ -43,7 +43,7 @@ public class TestReplication {
         //Setup source table
         try {
             createTableWithOneThousandRows(
-                    this.sourceHarness.getAsyncClient(), TABLE_NAME, 32 * 1024, DEFAULT_SLEEP);
+                    this.sourceHarness.getAsyncClient(), TABLE_NAME, 10, DEFAULT_SLEEP);
         } catch (Exception e) {
             e.printStackTrace();
             LOG.error(e.getMessage());
@@ -52,7 +52,7 @@ public class TestReplication {
 
         // We create the sink table here, temporary workaround to get things up and running.
         // TODO: ideally we should not need to do this.
-        KuduTable sinkTable = createDefaultTable(this.sinkHarness.getClient(), TABLE_NAME);
+//        KuduTable sinkTable = createDefaultTable(this.sinkHarness.getClient(), TABLE_NAME);
 
         ReplicationJobConfig config = new ReplicationJobConfig();
 
@@ -63,7 +63,8 @@ public class TestReplication {
         ReplicationJobExecutor executor = new ReplicationJobExecutor(config);
         executor.runJob();
 
-        sinkTable = sinkClient.openTable(TABLE_NAME);
+//        sinkTable = sinkClient.openTable(TABLE_NAME);
+        KuduTable sinkTable = sinkClient.openTable(TABLE_NAME);
         assertEquals(1000, countRowsInTable(sinkTable));
     }
 

@@ -26,6 +26,7 @@ import org.apache.flink.api.connector.source.SourceReader;
 import org.apache.flink.api.connector.source.SourceSplit;
 import org.apache.flink.api.connector.source.SplitEnumerator;
 import org.apache.flink.connector.kudu.connector.ColumnSchemasFactory;
+import org.apache.flink.connector.kudu.connector.CreateTableOptionsFactory;
 import org.apache.flink.connector.kudu.connector.KuduTableInfo;
 import org.apache.flink.connector.kudu.connector.converter.RowResultRowConverter;
 import org.apache.flink.connector.kudu.connector.reader.KuduInputSplit;
@@ -49,11 +50,16 @@ import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.types.Row;
 import org.apache.kudu.ColumnSchema;
+import org.apache.kudu.Schema;
 import org.apache.kudu.Type;
 import org.apache.kudu.client.CreateTableOptions;
+import org.apache.kudu.client.KuduClient;
+import org.apache.kudu.client.KuduException;
 import org.apache.kudu.client.KuduTable;
 import org.apache.kudu.client.Operation;
 import org.apache.kudu.client.PartialRow;
+import org.apache.kudu.client.Partition;
+import org.apache.kudu.client.PartitionSchema;
 import org.apache.kudu.shaded.com.google.common.collect.Lists;
 
 import java.util.*;
@@ -73,12 +79,19 @@ class ReplicationJobExecutor {
      * Executes the actual business logic of the replication.
      */
     public void runJob() throws Exception {
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 
+        KuduClient sinkClient = new KuduClient.KuduClientBuilder(String.join(",", config.getSinkMasterAddresses())).build();
+        KuduClient sourceClient = new KuduClient.KuduClientBuilder(String.join(",", config.getSourceMasterAddresses())).build();
+        if (!sinkClient.tableExists(config.getTableName())) {
+            Schema schema = sourceClient.openTable(config.getTableName()).getSchema();
+            sinkClient.createTable(config.getTableName(), schema, new CustomCreateTableOptions(config).getCreateTableOptions());
+        }
+
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         KuduSink<Row> kuduSink = new KuduSinkBuilder<Row>()
                 .setWriterConfig(getWriterConfig())
                 .setTableInfo(getTableInfo())
-                .setOperationMapper(getRowOperationMapper())
+                .setOperationMapper(new CustomReplicationOperationMapper())
                 .build();
 
         KuduSource<Row> kuduSource = new KuduSourceBuilder<Row>()
@@ -102,12 +115,6 @@ class ReplicationJobExecutor {
             .build();
     }
 
-    // TODO: figure out the mechanism to get this auto populated
-    // for now just got the column names hardcoed ~.~
-    private KuduOperationMapper getRowOperationMapper() {
-        return new CustomAbstractSingleOperationMapper(CustomAbstractSingleOperationMapper.KuduOperation.UPSERT);
-
-    }
 
     private KuduReaderConfig getReaderConfig() {
         return KuduReaderConfig.Builder
