@@ -272,6 +272,22 @@ public abstract class ClientTestUtil {
     return new Schema(columns);
   }
 
+  public static Schema getNonUniqueKeyBasicSchema() {
+    ArrayList<ColumnSchema> columns = new ArrayList<>(5);
+    columns.add(new ColumnSchema.ColumnSchemaBuilder("key", Type.INT32).nonUniqueKey(true).build());
+    columns.add(new ColumnSchema.ColumnSchemaBuilder("column1_i", Type.INT32).build());
+    columns.add(new ColumnSchema.ColumnSchemaBuilder("column2_i", Type.INT32).build());
+    columns.add(new ColumnSchema.ColumnSchemaBuilder("column3_s", Type.STRING)
+            .nullable(true)
+            .desiredBlockSize(4096)
+            .encoding(ColumnSchema.Encoding.DICT_ENCODING)
+            .compressionAlgorithm(ColumnSchema.CompressionAlgorithm.LZ4)
+            .build());
+    columns.add(new ColumnSchema.ColumnSchemaBuilder("column4_b", Type.BOOL).build());
+    return new Schema(columns);
+  }
+
+
   public static CreateTableOptions getBasicCreateTableOptions() {
     return new CreateTableOptions().setRangePartitionColumns(ImmutableList.of("key"));
   }
@@ -333,7 +349,7 @@ public abstract class ClientTestUtil {
   public static Upsert createBasicSchemaUpsert(KuduTable table, int key) {
     Upsert upsert = table.newUpsert();
     PartialRow row = upsert.getRow();
-    row.addInt(0, key);
+    row.addInt("key", key);
     row.addInt(1, 3);
     row.addInt(2, 4);
     row.addString(3, "another string");
@@ -361,11 +377,11 @@ public abstract class ClientTestUtil {
   public static Insert createBasicSchemaInsert(KuduTable table, int key) {
     Insert insert = table.newInsert();
     PartialRow row = insert.getRow();
-    row.addInt(0, key);
-    row.addInt(1, 2);
-    row.addInt(2, 3);
-    row.addString(3, "a string");
-    row.addBoolean(4, true);
+    row.addInt("key", key);
+    row.addInt("column1_i", 2);
+    row.addInt("column2_i", 3);
+    row.addString("column3_s", "a string");
+    row.addBoolean("column4_b", true);
     return insert;
   }
 
@@ -426,7 +442,53 @@ public abstract class ClientTestUtil {
     return table;
   }
 
-  public static Schema createManyVarcharsSchema() {
+  public static KuduTable createAutoIncrementingTableWithOneThousandRows(AsyncKuduClient client,
+                                                         String tableName,
+                                                         final int rowDataSize,
+                                                         final long timeoutMs)
+          throws Exception {
+    final int[] KEYS = new int[] { 250, 500, 750 };
+    final Schema autoIncrementSchema = getNonUniqueKeyBasicSchema();
+    CreateTableOptions builder = getBasicCreateTableOptions();
+    for (int i : KEYS) {
+      PartialRow splitRow = autoIncrementSchema.newPartialRow();
+      splitRow.addInt(0, i);
+      builder.addSplitRow(splitRow);
+    }
+    KuduTable table = client.syncClient().createTable(tableName, autoIncrementSchema, builder);
+    AsyncKuduSession session = client.newSession();
+
+    // create a table with on 4 tablets of 250 rows each
+    for (int key = 0; key < 1000; key++) {
+      Insert insert = createBasicSchemaInsert(table, key);
+      session.apply(insert).join(timeoutMs);
+    }
+    session.close().join(timeoutMs);
+    return table;
+  }
+
+  public static KuduTable insertAutoIncrementingTableWithOneThousandRows(AsyncKuduClient client,
+                                                                         String tableName,
+                                                                         final int startKey,
+                                                                         final int rowDataSize,
+                                                                         final long timeoutMs)
+          throws Exception {
+//    KuduTable table = client.syncClient().createTable(tableName, autoIncrementSchema, builder);
+    KuduTable table = client.syncClient().openTable(tableName);
+    AsyncKuduSession session = client.newSession();
+
+    // create a table with on 4 tablets of 250 rows each
+    for (int key = startKey; key < startKey + 1000; key++) {
+      Insert insert = createBasicSchemaInsert(table, key);
+      session.apply(insert).join(timeoutMs);
+    }
+    session.close().join(timeoutMs);
+    return table;
+  }
+
+
+
+    public static Schema createManyVarcharsSchema() {
     ArrayList<ColumnSchema> columns = new ArrayList<>();
     columns.add(new ColumnSchema.ColumnSchemaBuilder("key", Type.VARCHAR)
                   .typeAttributes(CharUtil.typeAttributes(10)).key(true).build());
