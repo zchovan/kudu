@@ -23,7 +23,7 @@ import java.util
 
 import com.google.protobuf.ByteString
 import com.google.protobuf.StringValue
-import org.apache.commons.net.util.Base64
+import org.apache.commons.codec.binary.Base64
 import org.apache.kudu.backup.Backup._
 import org.apache.kudu.ColumnSchema.ColumnSchemaBuilder
 import org.apache.kudu.ColumnSchema.CompressionAlgorithm

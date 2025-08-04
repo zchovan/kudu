@@ -46,7 +46,9 @@ tasks.withType(Test) {
   jvmArgs += "-Xmx1g"
   // Hide the Java 9+ warnings about illegal reflective access
   if (JavaVersion.current().isJava9Compatible()) {
-    jvmArgs += "--illegal-access=permit"
+    if ((JavaVersion.current() <=> JavaVersion.VERSION_17) == -1) {
+      jvmArgs += "--illegal-access=permit"
+    }
     def reflectionModules = [
         "java.base/java.io",   // java.io reflection is used by Spark
         "java.base/java.lang", // java.lang reflection is used by TestUtils
@@ -65,6 +67,26 @@ tasks.withType(Test) {
   // https://netty.io/wiki/reference-counted-objects.html#leak-detection-levels
   if (propertyExists("nettyLeakDetection")) {
     jvmArgs += "-Dio.netty.leakDetection.level=paranoid"
+  }
+
+  // Spark and Java17 compatibility hack (needed for Java9+)
+  // https://stackoverflow.com/questions/78700208/symbolic-reference-class-is-not-accessible-class-sun-util-calendar-zoneinfo-fr
+  if (JavaVersion.current().isJava9Compatible()) {
+    jvmArgs += "--add-opens=java.base/java.lang=ALL-UNNAMED"
+    jvmArgs += "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED"
+    jvmArgs += "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED"
+    jvmArgs += "--add-opens=java.base/java.io=ALL-UNNAMED"
+    jvmArgs += "--add-opens=java.base/java.net=ALL-UNNAMED"
+    jvmArgs += "--add-opens=java.base/java.nio=ALL-UNNAMED"
+    jvmArgs += "--add-opens=java.base/java.util=ALL-UNNAMED"
+    jvmArgs += "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED"
+    jvmArgs += "--add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED"
+    jvmArgs += "--add-opens=java.base/jdk.internal.ref=ALL-UNNAMED"
+    jvmArgs += "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
+    jvmArgs += "--add-opens=java.base/sun.nio.cs=ALL-UNNAMED"
+    jvmArgs += "--add-opens=java.base/sun.security.action=ALL-UNNAMED"
+    jvmArgs += "--add-opens=java.base/sun.util.calendar=ALL-UNNAMED"
+    jvmArgs += "--add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED"
   }
 
   // Set a few system properties.

@@ -32,6 +32,7 @@ dependencies {
   compileOnlyApi libs.slf4jApi
 
   testImplementation project(path: ":kudu-test-utils", configuration: "shadow")
+  testImplementation project(path: ":kudu-client")
   testImplementation libs.junit
   testImplementation libs.scalatest
   testImplementation libs.log4jApi
