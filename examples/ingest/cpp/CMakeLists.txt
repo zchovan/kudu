@@ -38,7 +38,7 @@ include_directories(${KUDU_INCLUDE_DIR})
 # Prometheus client (pull endpoint)
 include(FetchContent)
 set(ENABLE_PULL ON CACHE BOOL "" FORCE)
-set(ENABLE_PUSH OFF CACHE BOOL "" FORCE)
+set(ENABLE_PUSH ON CACHE BOOL "" FORCE)
 FetchContent_Declare(
   prometheus-cpp
   GIT_REPOSITORY https://github.com/jupp0r/prometheus-cpp.git
@@ -50,7 +50,8 @@ FetchContent_MakeAvailable(prometheus-cpp)
 add_executable(kudu_insert kudu_insert.cc)
 
 # Link libraries
-target_link_libraries(kudu_insert ${KUDU_CLIENT_LIB} prometheus-cpp::pull)
+target_link_libraries(kudu_insert ${KUDU_CLIENT_LIB} prometheus-cpp::pull
+                      prometheus-cpp::push)
 
 # Enable warnings
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")

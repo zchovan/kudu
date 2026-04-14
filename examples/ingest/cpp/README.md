@@ -8,6 +8,10 @@ This is a high-performance C++ program that uses the native Apache Kudu C++ clie
 - Creates a table with a predefined schema (if not exists)
 - Reads data from TSV file
 - Batch inserts with manual flush control for high performance
+- Configurable flush interval, mutation buffer size, and writer threads
+- Multi-threaded ingestion by splitting the input file
+- Dry-run mode for parse-only benchmarking
+- JSON summary output (including per-flush latencies)
 - Performance timing and metrics
 - Comprehensive error handling and reporting
 - Supports large datasets with efficient buffering
@@ -233,6 +237,9 @@ make build
 ```bash
 ./kudu_insert <path_to_tsv_file> [master_address]
 ./kudu_insert <path_to_tsv_file> --master <host:port> --metrics-port <port>
+./kudu_insert <path_to_tsv_file> --flush-interval 10000 --buffer-size-mb 100 \
+  --num-threads 4
+./kudu_insert <path_to_tsv_file> --dry-run --num-threads 4
 ```
 
 ### Examples:
@@ -254,6 +261,21 @@ make build
 If `--master` is not supplied, the client uses `KUDU_MASTER` (if set) or
 `localhost:7051`.
 
+### Tuning flags
+
+- `--flush-interval <rows>` controls how many rows each thread buffers before a
+  manual flush (default: 10000).
+- `--buffer-size-mb <mb>` sets the mutation buffer size per session (default: 100).
+- `--num-threads <n>` splits the input file into N segments and runs N parallel
+  writer threads (default: 1).
+- `--dry-run` parses the TSV without writing to Kudu to isolate I/O costs.
+
+Suggested sweep values:
+
+- Writer threads: 1, 4, 16, 32
+- Flush interval: 1k, 10k, 50k rows
+- Mutation buffer size: 50MB, 100MB, 500MB
+
 ### Metrics endpoint
 
 By default, the ingest process exposes Prometheus metrics at
@@ -263,6 +285,10 @@ By default, the ingest process exposes Prometheus metrics at
 To persist a metrics summary, use `--metrics-output /path/to/metrics.json` (or
 `KUDU_INGEST_METRICS_OUTPUT`). To keep the metrics endpoint alive after ingest,
 use `--metrics-keepalive-seconds <n>` or `--metrics-keepalive`.
+
+To push metrics to a Prometheus Pushgateway, set `--metrics-push-gateway
+<host:port>` (or `KUDU_INGEST_METRICS_PUSH_GATEWAY`). Override the job name with
+`--metrics-push-job`.
 
 ## TSV File Format
 
@@ -300,6 +326,10 @@ Processed 30000 rows...
 Time taken: 12.345 seconds
 ================================================================================
 ```
+
+After the human-readable summary, the program emits a JSON result line to
+stdout that includes `rows_inserted`, `elapsed_seconds`, `rows_per_second`,
+`error_count`, and `flush_latencies_ms` for automated collection.
 
 ## Troubleshooting
 
@@ -398,9 +428,9 @@ The program is optimized for high-throughput ingestion:
 4. **Efficient Parsing** - Direct string-to-type conversion without intermediate copies
 
 For even better performance on large datasets:
-- Increase `kFlushInterval` for less frequent flushes
-- Increase `SetMutationBufferSpace` if you have more RAM
-- Use multiple threads to read/parse different file sections
+- Increase `--flush-interval` for less frequent flushes
+- Increase `--buffer-size-mb` if you have more RAM
+- Use `--num-threads` to parallelize ingestion
 
 ## Further Reading
 

@@ -1,0 +1,116 @@
+version: "3.9"
+
+services:
+  kudu-master:
+    image: ${KUDU_IMAGE}
+    user: root
+    command:
+      - master
+      - --webserver_interface=0.0.0.0
+      - --webserver_port=8051
+    environment:
+      KUDU_MASTERS: ${KUDU_MASTER}
+      MASTER_ARGS: --unlock_unsafe_flags
+    ports:
+      - "7051:7051"
+      - "8051:8051"
+    volumes:
+      - kudu-master-data:/var/lib/kudu/master
+    profiles:
+      - core
+      - ingest
+
+  kudu-tserver-1:
+    image: ${KUDU_IMAGE}
+    user: root
+    command:
+      - tserver
+      - --tserver_master_addrs=${KUDU_MASTER}
+      - --webserver_interface=0.0.0.0
+      - --webserver_port=8050
+    environment:
+      KUDU_MASTERS: ${KUDU_MASTER}
+      TSERVER_ARGS: --unlock_unsafe_flags
+    ports:
+      - "8050:8050"
+    volumes:
+      - kudu-tserver-1-data:/var/lib/kudu/tserver
+    depends_on:
+      - kudu-master
+    profiles:
+      - core
+      - ingest
+
+  kudu-tserver-2:
+    image: ${KUDU_IMAGE}
+    user: root
+    command:
+      - tserver
+      - --tserver_master_addrs=${KUDU_MASTER}
+      - --webserver_interface=0.0.0.0
+      - --webserver_port=8050
+    environment:
+      KUDU_MASTERS: ${KUDU_MASTER}
+      TSERVER_ARGS: --unlock_unsafe_flags
+    ports:
+      - "8052:8050"
+    volumes:
+      - kudu-tserver-2-data:/var/lib/kudu/tserver
+    depends_on:
+      - kudu-master
+    profiles:
+      - core
+      - ingest
+
+  kudu-tserver-3:
+    image: ${KUDU_IMAGE}
+    user: root
+    command:
+      - tserver
+      - --tserver_master_addrs=${KUDU_MASTER}
+      - --webserver_interface=0.0.0.0
+      - --webserver_port=8050
+    environment:
+      KUDU_MASTERS: ${KUDU_MASTER}
+      TSERVER_ARGS: --unlock_unsafe_flags
+    ports:
+      - "8053:8050"
+    volumes:
+      - kudu-tserver-3-data:/var/lib/kudu/tserver
+    depends_on:
+      - kudu-master
+    profiles:
+      - core
+      - ingest
+
+  cpp-ingest:
+    build:
+      context: ../cpp
+      dockerfile: Dockerfile
+    command:
+      - /data/${INGEST_TSV_FILE}
+      - --master
+      - ${KUDU_MASTER}
+      - --metrics-port
+      - ${INGEST_METRICS_PORT}
+    environment:
+      KUDU_MASTER: ${KUDU_MASTER}
+      KUDU_INGEST_METRICS_PORT: ${INGEST_METRICS_PORT}
+      KUDU_INGEST_METRICS_OUTPUT: ${INGEST_METRICS_OUTPUT:-}
+      KUDU_INGEST_METRICS_KEEPALIVE_SECONDS: ${INGEST_METRICS_KEEPALIVE_SECONDS:-0}
+    volumes:
+      - ${INGEST_DATA_DIR}:/data
+    ports:
+      - "${INGEST_METRICS_PORT}:${INGEST_METRICS_PORT}"
+    depends_on:
+      - kudu-tserver-1
+      - kudu-tserver-2
+      - kudu-tserver-3
+    profiles:
+      - ingest
+
+volumes:
+  kudu-master-data:
+  kudu-tserver-1-data:
+  kudu-tserver-2-data:
+  kudu-tserver-3-data:
