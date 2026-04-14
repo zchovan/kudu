@@ -19,6 +19,7 @@ services:
     profiles:
       - core
       - ingest
+      - monitoring
 
   kudu-tserver-1:
     image: ${KUDU_IMAGE}
@@ -40,6 +41,7 @@ services:
     profiles:
       - core
       - ingest
+      - monitoring
 
   kudu-tserver-2:
     image: ${KUDU_IMAGE}
@@ -61,6 +63,7 @@ services:
     profiles:
       - core
       - ingest
+      - monitoring
 
   kudu-tserver-3:
     image: ${KUDU_IMAGE}
@@ -82,6 +85,7 @@ services:
     profiles:
       - core
       - ingest
+      - monitoring
 
   cpp-ingest:
     build:
@@ -109,8 +113,52 @@ services:
     profiles:
       - ingest
 
+  prometheus:
+    image: ${PROMETHEUS_IMAGE}
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-12h}
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    depends_on:
+      - kudu-master
+      - kudu-tserver-1
+      - kudu-tserver-2
+      - kudu-tserver-3
+      - pushgateway
+    profiles:
+      - monitoring
+
+  pushgateway:
+    image: ${PUSHGATEWAY_IMAGE}
+    ports:
+      - "${PUSHGATEWAY_PORT:-9091}:9091"
+    profiles:
+      - monitoring
+
+  grafana:
+    image: ${GRAFANA_IMAGE}
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    depends_on:
+      - prometheus
+    profiles:
+      - monitoring
+
 volumes:
   kudu-master-data:
   kudu-tserver-1-data:
   kudu-tserver-2-data:
   kudu-tserver-3-data:
+  prometheus-data:
+  grafana-data:

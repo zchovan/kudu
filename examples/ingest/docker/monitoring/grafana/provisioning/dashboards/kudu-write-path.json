@@ -1,0 +1,97 @@
+{
+  "id": null,
+  "uid": "kudu-write-path",
+  "title": "Kudu Write Path",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": "-- Grafana --",
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "WAL Bytes Logged (per sec)",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(rate(label_replace({__name__=~\"kudu_tablet_.*_log_bytes_logged\"},\"series\",\"$1\",\"__name__\",\"(.*)\")[1m:]))",
+          "refId": "A"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Log Sync Latency (avg us)",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(rate(label_replace({__name__=~\"kudu_tablet_.*_log_sync_latency_sum\"},\"series\",\"$1\",\"__name__\",\"(.*)\")[1m:])) / sum(rate(label_replace({__name__=~\"kudu_tablet_.*_log_sync_latency_count\"},\"series\",\"$1\",\"__name__\",\"(.*)\")[1m:]))",
+          "refId": "A"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Log Append Latency (avg us)",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(rate(label_replace({__name__=~\"kudu_tablet_.*_log_append_latency_sum\"},\"series\",\"$1\",\"__name__\",\"(.*)\")[1m:])) / sum(rate(label_replace({__name__=~\"kudu_tablet_.*_log_append_latency_count\"},\"series\",\"$1\",\"__name__\",\"(.*)\")[1m:]))",
+          "refId": "A"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 }
+    },
+    {
+      "type": "timeseries",
+      "title": "MemRowSet Flush Duration (avg ms)",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(rate(label_replace({__name__=~\"kudu_tablet_.*_flush_mrs_duration_sum\"},\"series\",\"$1\",\"__name__\",\"(.*)\")[1m:])) / sum(rate(label_replace({__name__=~\"kudu_tablet_.*_flush_mrs_duration_count\"},\"series\",\"$1\",\"__name__\",\"(.*)\")[1m:]))",
+          "refId": "A"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 }
+    },
+    {
+      "type": "timeseries",
+      "title": "DeltaMemStore Flush Duration (avg ms)",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(rate(label_replace({__name__=~\"kudu_tablet_.*_flush_dms_duration_sum\"},\"series\",\"$1\",\"__name__\",\"(.*)\")[1m:])) / sum(rate(label_replace({__name__=~\"kudu_tablet_.*_flush_dms_duration_count\"},\"series\",\"$1\",\"__name__\",\"(.*)\")[1m:]))",
+          "refId": "A"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 }
+    },
+    {
+      "type": "timeseries",
+      "title": "RowSet Compaction Duration (avg ms)",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(rate(label_replace({__name__=~\"kudu_tablet_.*_compact_rs_duration_sum\"},\"series\",\"$1\",\"__name__\",\"(.*)\")[1m:])) / sum(rate(label_replace({__name__=~\"kudu_tablet_.*_compact_rs_duration_count\"},\"series\",\"$1\",\"__name__\",\"(.*)\")[1m:]))",
+          "refId": "A"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 }
+    }
+  ],
+  "templating": { "list": [] }
+}

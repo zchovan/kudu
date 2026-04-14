@@ -1,0 +1,30 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: kudu-master
+    metrics_path: /metrics_prometheus
+    static_configs:
+      - targets:
+          - kudu-master:8051
+
+  - job_name: kudu-tserver
+    metrics_path: /metrics_prometheus
+    static_configs:
+      - targets:
+          - kudu-tserver-1:8050
+          - kudu-tserver-2:8050
+          - kudu-tserver-3:8050
+
+  - job_name: cpp-ingest
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - cpp-ingest:8080
+
+  - job_name: pushgateway
+    honor_labels: true
+    static_configs:
+      - targets:
+          - pushgateway:9091

@@ -1,0 +1,109 @@
+{
+  "id": null,
+  "uid": "kudu-overview",
+  "title": "Kudu Overview",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": "-- Grafana --",
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Masters Up",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(up{job=\"kudu-master\"})",
+          "refId": "A"
+        }
+      ],
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 }
+    },
+    {
+      "type": "stat",
+      "title": "TServers Up",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(up{job=\"kudu-tserver\"})",
+          "refId": "A"
+        }
+      ],
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 }
+    },
+    {
+      "type": "stat",
+      "title": "Ingest Rows Inserted",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "kudu_ingest_rows_inserted",
+          "refId": "A"
+        }
+      ],
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 }
+    },
+    {
+      "type": "stat",
+      "title": "Ingest Errors",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "kudu_ingest_error_count",
+          "refId": "A"
+        }
+      ],
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Ingest Throughput (rows/sec)",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "kudu_ingest_rows_per_second",
+          "refId": "A"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 }
+    },
+    {
+      "type": "timeseries",
+      "title": "WAL Bytes Logged (per sec)",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(rate(label_replace({__name__=~\"kudu_tablet_.*_log_bytes_logged\"},\"series\",\"$1\",\"__name__\",\"(.*)\")[1m:]))",
+          "refId": "A"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 }
+    },
+    {
+      "type": "bargauge",
+      "title": "Tablet Bytes Flushed by TServer",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum({__name__=~\"kudu_tablet_.*_bytes_flushed\"})",
+          "refId": "A"
+        }
+      ],
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 12 }
+    }
+  ],
+  "templating": { "list": [] }
+}

@@ -1,4 +1,4 @@
-.PHONY: help up core-up ingest-cpp ingest-cpp-bg ingest-all benchmark-cpp-matrix down logs check-data
+.PHONY: help up core-up monitoring-up ingest-cpp ingest-cpp-bg ingest-all benchmark-cpp-matrix down logs check-data
 
 DOCKER_DIR := $(CURDIR)/docker
 PROJECT_NAME := ingest
@@ -13,8 +13,9 @@ CPP_BENCH_OUT_DIR ?= $(CURDIR)/bench-results
 
 help:
 	@echo "Make targets:"
-	@echo "  up             Start Kudu cluster"
+	@echo "  up             Start Kudu cluster + monitoring stack"
 	@echo "  core-up        Start Kudu master/tservers"
+	@echo "  monitoring-up  Start Prometheus/Grafana/Pushgateway"
 	@echo "  ingest-cpp     Run C++ ingest pipeline"
 	@echo "  ingest-cpp-bg  Run C++ ingest in background (metrics)"
 	@echo "  benchmark-cpp-matrix  Sweep C++ ingest tuning matrix"
@@ -28,8 +29,12 @@ help:
 	@echo "  CPP_FLUSH_VALUES       Matrix flush intervals (default: 1000 10000 50000)"
 	@echo "  CPP_BUFFER_VALUES_MB   Matrix buffer sizes MB (default: 50 100 500)"
 	@echo "  CPP_BENCH_OUT_DIR      Output directory for matrix artifacts"
+	@echo "  INGEST_METRICS_PUSH_GATEWAY / INGEST_METRICS_PUSH_JOB in docker/.env control push defaults"
 
-up: core-up
+up: core-up monitoring-up
+monitoring-up:
+	$(COMPOSE) --profile monitoring up -d
+
 
 core-up:
 	$(COMPOSE) --profile core up -d
@@ -38,9 +43,18 @@ ingest-cpp: check-data up
 	@env_file="$(DOCKER_DIR)/.env"; \
 	kudu_master="$$(grep '^KUDU_MASTER=' "$$env_file" | cut -d= -f2)"; \
 	metrics_port="$$(grep '^INGEST_METRICS_PORT=' "$$env_file" | cut -d= -f2)"; \
+	push_gateway="$$(grep '^INGEST_METRICS_PUSH_GATEWAY=' "$$env_file" | cut -d= -f2)"; \
+	push_job="$$(grep '^INGEST_METRICS_PUSH_JOB=' "$$env_file" | cut -d= -f2)"; \
 	tsv_file="$$(grep '^INGEST_TSV_FILE=' "$$env_file" | cut -d= -f2)"; \
+	push_args=""; \
+	if [ -n "$$push_gateway" ]; then \
+	  push_args="$$push_args --metrics-push-gateway $$push_gateway"; \
+	fi; \
+	if [ -n "$$push_job" ]; then \
+	  push_args="$$push_args --metrics-push-job $$push_job"; \
+	fi; \
 	$(COMPOSE) --profile ingest run --build --rm --service-ports cpp-ingest \
-	  /data/$$tsv_file --master $$kudu_master --metrics-port $$metrics_port $(INGEST_ARGS)
+	  /data/$$tsv_file --master $$kudu_master --metrics-port $$metrics_port $$push_args $(INGEST_ARGS)
 
 ingest-cpp-bg: check-data up
 	@docker rm -f cpp-ingest >/dev/null 2>&1 || true
@@ -90,7 +104,7 @@ benchmark-cpp-matrix: check-data up
 	echo "Summary: $$summary_csv"
 
 down:
-	$(COMPOSE) --profile core --profile ingest down --volumes
+	$(COMPOSE) --profile core --profile monitoring --profile ingest down --volumes
 
 logs:
 	$(COMPOSE) logs -f

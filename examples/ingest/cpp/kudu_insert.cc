@@ -15,17 +15,20 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#include <iostream>
-#include <fstream>
-#include <sstream>
-#include <string>
-#include <vector>
-#include <ctime>
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <map>
 #include <memory>
+#include <sstream>
+#include <string>
 #include <thread>
+#include <vector>
 
 #include <kudu/client/client.h>
 #include <kudu/client/write_op.h>
@@ -33,6 +36,7 @@
 #include <prometheus/counter.h>
 #include <prometheus/exposer.h>
 #include <prometheus/gauge.h>
+#include <prometheus/gateway.h>
 #include <prometheus/registry.h>
 
 using kudu::client::KuduClient;
@@ -57,6 +61,10 @@ static const char* const kMasterEnvVar = "KUDU_MASTER";
 static const char* const kMetricsEnvVar = "KUDU_INGEST_METRICS_PORT";
 static const char* const kMetricsOutputEnvVar = "KUDU_INGEST_METRICS_OUTPUT";
 static const char* const kMetricsKeepaliveEnvVar = "KUDU_INGEST_METRICS_KEEPALIVE_SECONDS";
+static const char* const kMetricsPushGatewayEnvVar = "KUDU_INGEST_METRICS_PUSH_GATEWAY";
+static const char* const kMetricsPushJobEnvVar = "KUDU_INGEST_METRICS_PUSH_JOB";
+static const char* const kRunIdEnvVar = "KUDU_INGEST_RUN_ID";
+static const char* const kDefaultMetricsPushJob = "kudu_ingest";
 
 struct AppConfig {
   std::string file_path;
@@ -65,22 +73,44 @@ struct AppConfig {
   std::string metrics_output_path;
   int metrics_keepalive_seconds;
   bool metrics_keepalive_forever;
+  std::string metrics_push_gateway;
+  std::string metrics_push_job;
+  std::string run_id;
+  int64_t flush_interval;
+  int buffer_size_mb;
+  int num_threads;
+  bool dry_run;
 };
 
 struct IngestResult {
   int64_t rows_read = 0;
   int64_t rows_inserted = 0;
   int64_t error_count = 0;
+  std::vector<double> flush_latencies_ms;
 };
 
 struct IngestMetrics {
   std::shared_ptr<prometheus::Registry> registry;
   std::unique_ptr<prometheus::Exposer> exposer;
+  std::unique_ptr<prometheus::Gateway> gateway;
   prometheus::Counter* rows_read = nullptr;
   prometheus::Counter* rows_inserted = nullptr;
   prometheus::Counter* error_count = nullptr;
   prometheus::Gauge* elapsed_seconds = nullptr;
   prometheus::Gauge* rows_per_second = nullptr;
+};
+
+struct ThreadResult {
+  int64_t rows_read = 0;
+  int64_t rows_inserted = 0;
+  int64_t error_count = 0;
+  std::vector<double> flush_latencies_ms;
+};
+
+struct FileSegment {
+  std::streamoff start_offset = 0;
+  std::streamoff end_offset = 0;
+  bool is_last = false;
 };
 
 static std::string GetEnvOrDefault(const char* name,
@@ -106,6 +136,20 @@ static bool ParseIntValue(const std::string& value, int* out) {
   }
 }
 
+static bool ParseInt64Value(const std::string& value, int64_t* out) {
+  try {
+    size_t idx = 0;
+    int64_t parsed = std::stoll(value, &idx);
+    if (idx != value.size()) {
+      return false;
+    }
+    *out = parsed;
+    return true;
+  } catch (const std::exception&) {
+    return false;
+  }
+}
+
 static int GetEnvOrDefaultInt(const char* name, int default_value) {
   const char* raw_value = std::getenv(name);
   if (raw_value == nullptr || std::string(raw_value).empty()) {
@@ -118,9 +162,34 @@ static int GetEnvOrDefaultInt(const char* name, int default_value) {
   return default_value;
 }
 
+static void ParseGatewayEndpoint(const std::string& endpoint,
+                                 std::string* host,
+                                 std::string* port) {
+  std::string value = endpoint;
+  const std::string http_prefix = "http://";
+  const std::string https_prefix = "https://";
+  if (value.rfind(http_prefix, 0) == 0) {
+    value = value.substr(http_prefix.size());
+  } else if (value.rfind(https_prefix, 0) == 0) {
+    value = value.substr(https_prefix.size());
+  }
+
+  std::string parsed_host = value;
+  std::string parsed_port = "9091";
+  size_t colon = value.rfind(':');
+  if (colon != std::string::npos && colon > 0 && colon + 1 < value.size()) {
+    parsed_host = value.substr(0, colon);
+    parsed_port = value.substr(colon + 1);
+  }
+  *host = parsed_host;
+  *port = parsed_port;
+}
+
 static void PrintUsage(const char* binary) {
   std::cerr << "Usage: " << binary << " <tsv_file_path> [master_address]"
-            << " [--master <host:port>] [--metrics-port <port>]" << std::endl;
+            << " [--master <host:port>] [--metrics-port <port>]"
+            << " [--flush-interval <rows>] [--buffer-size-mb <mb>]"
+            << " [--num-threads <n>] [--dry-run]" << std::endl;
   std::cerr << "  tsv_file_path   - Path to the TSV file to ingest" << std::endl;
   std::cerr << "  master_address  - Kudu master address (default: localhost:7051"
             << " or $KUDU_MASTER)" << std::endl;
@@ -129,10 +198,25 @@ static void PrintUsage(const char* binary) {
             << std::endl;
   std::cerr << "  --metrics-output - Write JSON metrics summary to a file"
             << " (default: $KUDU_INGEST_METRICS_OUTPUT)" << std::endl;
+  std::cerr << "  --metrics-push-gateway - Pushgateway host:port"
+            << " (default: $KUDU_INGEST_METRICS_PUSH_GATEWAY)" << std::endl;
+  std::cerr << "  --metrics-push-job - Pushgateway job name"
+            << " (default: " << kDefaultMetricsPushJob
+            << " or $KUDU_INGEST_METRICS_PUSH_JOB)" << std::endl;
+  std::cerr << "  --run-id        - Label to identify a benchmark run"
+            << " (default: $KUDU_INGEST_RUN_ID or default)" << std::endl;
   std::cerr << "  --metrics-keepalive-seconds - Keep metrics endpoint alive"
             << " after ingest (default: $KUDU_INGEST_METRICS_KEEPALIVE_SECONDS)"
             << std::endl;
   std::cerr << "  --metrics-keepalive - Keep metrics endpoint alive indefinitely"
+            << std::endl;
+  std::cerr << "  --flush-interval - Rows between manual flushes (default: 10000)"
+            << std::endl;
+  std::cerr << "  --buffer-size-mb - Mutation buffer size in MB (default: 100)"
+            << std::endl;
+  std::cerr << "  --num-threads    - Parallel writer threads (default: 1)"
+            << std::endl;
+  std::cerr << "  --dry-run        - Parse TSV without writing to Kudu"
             << std::endl;
 }
 
@@ -147,6 +231,14 @@ static bool ParseArgs(int argc, char* argv[], AppConfig* config) {
   config->metrics_output_path = GetEnvOrDefault(kMetricsOutputEnvVar, "");
   config->metrics_keepalive_seconds = GetEnvOrDefaultInt(kMetricsKeepaliveEnvVar, 0);
   config->metrics_keepalive_forever = false;
+  config->metrics_push_gateway = GetEnvOrDefault(kMetricsPushGatewayEnvVar, "");
+  config->metrics_push_job = GetEnvOrDefault(kMetricsPushJobEnvVar,
+                                             kDefaultMetricsPushJob);
+  config->run_id = GetEnvOrDefault(kRunIdEnvVar, "default");
+  config->flush_interval = 10000;
+  config->buffer_size_mb = 100;
+  config->num_threads = 1;
+  config->dry_run = false;
 
   bool master_set = false;
   for (int i = 2; i < argc; ++i) {
@@ -192,6 +284,30 @@ static bool ParseArgs(int argc, char* argv[], AppConfig* config) {
       config->metrics_keepalive_forever = true;
       continue;
     }
+    if (arg == "--metrics-push-gateway" && i + 1 < argc) {
+      config->metrics_push_gateway = argv[++i];
+      continue;
+    }
+    if (arg.rfind("--metrics-push-gateway=", 0) == 0) {
+      config->metrics_push_gateway = arg.substr(std::strlen("--metrics-push-gateway="));
+      continue;
+    }
+    if (arg == "--metrics-push-job" && i + 1 < argc) {
+      config->metrics_push_job = argv[++i];
+      continue;
+    }
+    if (arg.rfind("--metrics-push-job=", 0) == 0) {
+      config->metrics_push_job = arg.substr(std::strlen("--metrics-push-job="));
+      continue;
+    }
+    if (arg == "--run-id" && i + 1 < argc) {
+      config->run_id = argv[++i];
+      continue;
+    }
+    if (arg.rfind("--run-id=", 0) == 0) {
+      config->run_id = arg.substr(std::strlen("--run-id="));
+      continue;
+    }
     if (arg == "--metrics-keepalive-seconds" && i + 1 < argc) {
       int parsed = 0;
       if (!ParseIntValue(argv[++i], &parsed)) {
@@ -208,6 +324,58 @@ static bool ParseArgs(int argc, char* argv[], AppConfig* config) {
       config->metrics_keepalive_seconds = parsed;
       continue;
     }
+    if (arg == "--flush-interval" && i + 1 < argc) {
+      int64_t parsed = 0;
+      if (!ParseInt64Value(argv[++i], &parsed)) {
+        return false;
+      }
+      config->flush_interval = parsed;
+      continue;
+    }
+    if (arg.rfind("--flush-interval=", 0) == 0) {
+      int64_t parsed = 0;
+      if (!ParseInt64Value(arg.substr(std::strlen("--flush-interval=")), &parsed)) {
+        return false;
+      }
+      config->flush_interval = parsed;
+      continue;
+    }
+    if (arg == "--buffer-size-mb" && i + 1 < argc) {
+      int parsed = 0;
+      if (!ParseIntValue(argv[++i], &parsed)) {
+        return false;
+      }
+      config->buffer_size_mb = parsed;
+      continue;
+    }
+    if (arg.rfind("--buffer-size-mb=", 0) == 0) {
+      int parsed = 0;
+      if (!ParseIntValue(arg.substr(std::strlen("--buffer-size-mb=")), &parsed)) {
+        return false;
+      }
+      config->buffer_size_mb = parsed;
+      continue;
+    }
+    if (arg == "--num-threads" && i + 1 < argc) {
+      int parsed = 0;
+      if (!ParseIntValue(argv[++i], &parsed)) {
+        return false;
+      }
+      config->num_threads = parsed;
+      continue;
+    }
+    if (arg.rfind("--num-threads=", 0) == 0) {
+      int parsed = 0;
+      if (!ParseIntValue(arg.substr(std::strlen("--num-threads=")), &parsed)) {
+        return false;
+      }
+      config->num_threads = parsed;
+      continue;
+    }
+    if (arg == "--dry-run") {
+      config->dry_run = true;
+      continue;
+    }
     if (arg.rfind("--", 0) != 0 && !master_set) {
       config->master_address = arg;
       master_set = true;
@@ -216,51 +384,115 @@ static bool ParseArgs(int argc, char* argv[], AppConfig* config) {
     return false;
   }
 
+  if (config->flush_interval < 0) {
+    return false;
+  }
+  if (config->buffer_size_mb < 1) {
+    return false;
+  }
+  if (config->num_threads < 1) {
+    return false;
+  }
   return true;
 }
 
-static std::unique_ptr<IngestMetrics> StartMetrics(int metrics_port) {
-  if (metrics_port <= 0) {
+static std::unique_ptr<IngestMetrics> StartMetrics(const AppConfig& config) {
+  if (config.metrics_port <= 0 && config.metrics_push_gateway.empty()) {
     return nullptr;
   }
 
   auto metrics = std::make_unique<IngestMetrics>();
   metrics->registry = std::make_shared<prometheus::Registry>();
-  metrics->exposer = std::make_unique<prometheus::Exposer>(
-      "0.0.0.0:" + std::to_string(metrics_port));
-  metrics->exposer->RegisterCollectable(metrics->registry);
+  if (config.metrics_port > 0) {
+    metrics->exposer = std::make_unique<prometheus::Exposer>(
+        "0.0.0.0:" + std::to_string(config.metrics_port));
+    metrics->exposer->RegisterCollectable(metrics->registry);
+  }
+  if (!config.metrics_push_gateway.empty()) {
+    std::string gateway_host;
+    std::string gateway_port;
+    ParseGatewayEndpoint(config.metrics_push_gateway,
+                         &gateway_host,
+                         &gateway_port);
+    metrics->gateway = std::make_unique<prometheus::Gateway>(
+        gateway_host,
+        gateway_port,
+        config.metrics_push_job,
+        prometheus::Labels{},
+        "",
+        "",
+        std::chrono::seconds(10));
+    metrics->gateway->RegisterCollectable(metrics->registry);
+  }
+
+  prometheus::Labels metric_labels = {
+      {"run_id", config.run_id},
+      {"threads", std::to_string(config.num_threads)},
+      {"flush_interval", std::to_string(config.flush_interval)},
+      {"buffer_size_mb", std::to_string(config.buffer_size_mb)},
+      {"dry_run", config.dry_run ? "true" : "false"},
+  };
 
   auto& rows_read_family = prometheus::BuildCounter()
                                .Name("kudu_ingest_rows_read")
                                .Help("Rows read from TSV")
                                .Register(*metrics->registry);
-  metrics->rows_read = &rows_read_family.Add({});
+  metrics->rows_read = &rows_read_family.Add(metric_labels);
 
   auto& rows_inserted_family = prometheus::BuildCounter()
                                    .Name("kudu_ingest_rows_inserted")
                                    .Help("Rows successfully inserted")
                                    .Register(*metrics->registry);
-  metrics->rows_inserted = &rows_inserted_family.Add({});
+  metrics->rows_inserted = &rows_inserted_family.Add(metric_labels);
 
   auto& error_family = prometheus::BuildCounter()
                            .Name("kudu_ingest_error_count")
                            .Help("Total error count")
                            .Register(*metrics->registry);
-  metrics->error_count = &error_family.Add({});
+  metrics->error_count = &error_family.Add(metric_labels);
 
   auto& elapsed_family = prometheus::BuildGauge()
                              .Name("kudu_ingest_elapsed_seconds")
                              .Help("Elapsed seconds for ingest")
                              .Register(*metrics->registry);
-  metrics->elapsed_seconds = &elapsed_family.Add({});
+  metrics->elapsed_seconds = &elapsed_family.Add(metric_labels);
 
   auto& throughput_family = prometheus::BuildGauge()
                                 .Name("kudu_ingest_rows_per_second")
                                 .Help("Rows per second")
                                 .Register(*metrics->registry);
-  metrics->rows_per_second = &throughput_family.Add({});
+  metrics->rows_per_second = &throughput_family.Add(metric_labels);
 
   return metrics;
+}
+
+static std::string BuildJsonSummary(const IngestResult& result,
+                                    double elapsed_seconds,
+                                    double rows_per_second,
+                                    bool include_rows_read,
+                                    bool include_flush_latencies) {
+  std::ostringstream out;
+  out << std::setprecision(6);
+  out << "{";
+  if (include_rows_read) {
+    out << "\"rows_read\":" << result.rows_read << ",";
+  }
+  out << "\"rows_inserted\":" << result.rows_inserted << ","
+      << "\"elapsed_seconds\":" << elapsed_seconds << ","
+      << "\"rows_per_second\":" << rows_per_second << ","
+      << "\"error_count\":" << result.error_count;
+  if (include_flush_latencies) {
+    out << ",\"flush_latencies_ms\":[";
+    for (size_t i = 0; i < result.flush_latencies_ms.size(); ++i) {
+      if (i > 0) {
+        out << ",";
+      }
+      out << result.flush_latencies_ms[i];
+    }
+    out << "]";
+  }
+  out << "}";
+  return out.str();
 }
 
 static void WriteMetricsSummary(const std::string& path,
@@ -275,13 +507,19 @@ static void WriteMetricsSummary(const std::string& path,
     std::cerr << "Failed to write metrics summary to " << path << std::endl;
     return;
   }
-  out << "{"
-      << "\"rows_read\":" << result.rows_read << ","
-      << "\"rows_inserted\":" << result.rows_inserted << ","
-      << "\"error_count\":" << result.error_count << ","
-      << "\"elapsed_seconds\":" << elapsed_seconds << ","
-      << "\"rows_per_second\":" << rows_per_second
-      << "}" << std::endl;
+  out << BuildJsonSummary(result, elapsed_seconds, rows_per_second, true, true)
+      << std::endl;
+}
+
+static void PushMetrics(IngestMetrics* metrics, const AppConfig& config) {
+  if (!metrics || !metrics->gateway) {
+    return;
+  }
+  int result = metrics->gateway->Push();
+  if (result != 0) {
+    std::cerr << "Failed to push metrics to " << config.metrics_push_gateway
+              << " (status=" << result << ")" << std::endl;
+  }
 }
 
 static void KeepMetricsAlive(const AppConfig& config) {
@@ -326,6 +564,159 @@ static std::vector<std::string> SplitByTab(const std::string& line) {
   }
   
   return result;
+}
+
+class RowWriter {
+ public:
+  explicit RowWriter(KuduPartialRow* row) : row_(row) {}
+
+  Status SetInt64(const char* column, int64_t value) {
+    if (!row_) {
+      return Status::OK();
+    }
+    return row_->SetInt64(column, value);
+  }
+
+  Status SetInt32(const char* column, int32_t value) {
+    if (!row_) {
+      return Status::OK();
+    }
+    return row_->SetInt32(column, value);
+  }
+
+  Status SetInt16(const char* column, int16_t value) {
+    if (!row_) {
+      return Status::OK();
+    }
+    return row_->SetInt16(column, value);
+  }
+
+  Status SetString(const char* column, const std::string& value) {
+    if (!row_) {
+      return Status::OK();
+    }
+    return row_->SetString(column, value);
+  }
+
+  Status SetUnixTimeMicros(const char* column, int64_t value) {
+    if (!row_) {
+      return Status::OK();
+    }
+    return row_->SetUnixTimeMicros(column, value);
+  }
+
+ private:
+  KuduPartialRow* row_;
+};
+
+static Status PopulateRow(const std::vector<std::string>& fields,
+                          RowWriter* writer) {
+  KUDU_RETURN_NOT_OK(writer->SetInt64("WatchID", ParseInt64(fields[0])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("JavaEnable", ParseInt16(fields[1])));
+  KUDU_RETURN_NOT_OK(writer->SetString("Title", fields[2]));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("GoodEvent", ParseInt16(fields[3])));
+  KUDU_RETURN_NOT_OK(writer->SetUnixTimeMicros("EventTime", ParseInt64(fields[4])));
+  KUDU_RETURN_NOT_OK(writer->SetInt32("EventDate", ParseInt32(fields[5])));
+  KUDU_RETURN_NOT_OK(writer->SetInt32("CounterID", ParseInt32(fields[6])));
+  KUDU_RETURN_NOT_OK(writer->SetInt32("ClientIP", ParseInt32(fields[7])));
+  KUDU_RETURN_NOT_OK(writer->SetInt32("RegionID", ParseInt32(fields[8])));
+  KUDU_RETURN_NOT_OK(writer->SetInt64("UserID", ParseInt64(fields[9])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("CounterClass", ParseInt16(fields[10])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("OS", ParseInt16(fields[11])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("UserAgent", ParseInt16(fields[12])));
+  KUDU_RETURN_NOT_OK(writer->SetString("URL", fields[13]));
+  KUDU_RETURN_NOT_OK(writer->SetString("Referer", fields[14]));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("IsRefresh", ParseInt16(fields[15])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("RefererCategoryID", ParseInt16(fields[16])));
+  KUDU_RETURN_NOT_OK(writer->SetInt32("RefererRegionID", ParseInt32(fields[17])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("URLCategoryID", ParseInt16(fields[18])));
+  KUDU_RETURN_NOT_OK(writer->SetInt32("URLRegionID", ParseInt32(fields[19])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("ResolutionWidth", ParseInt16(fields[20])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("ResolutionHeight", ParseInt16(fields[21])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("ResolutionDepth", ParseInt16(fields[22])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("FlashMajor", ParseInt16(fields[23])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("FlashMinor", ParseInt16(fields[24])));
+  KUDU_RETURN_NOT_OK(writer->SetString("FlashMinor2", fields[25]));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("NetMajor", ParseInt16(fields[26])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("NetMinor", ParseInt16(fields[27])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("UserAgentMajor", ParseInt16(fields[28])));
+  KUDU_RETURN_NOT_OK(writer->SetString("UserAgentMinor", fields[29]));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("CookieEnable", ParseInt16(fields[30])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("JavascriptEnable", ParseInt16(fields[31])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("IsMobile", ParseInt16(fields[32])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("MobilePhone", ParseInt16(fields[33])));
+  KUDU_RETURN_NOT_OK(writer->SetString("MobilePhoneModel", fields[34]));
+  KUDU_RETURN_NOT_OK(writer->SetString("Params", fields[35]));
+  KUDU_RETURN_NOT_OK(writer->SetInt32("IPNetworkID", ParseInt32(fields[36])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("TraficSourceID", ParseInt16(fields[37])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("SearchEngineID", ParseInt16(fields[38])));
+  KUDU_RETURN_NOT_OK(writer->SetString("SearchPhrase", fields[39]));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("AdvEngineID", ParseInt16(fields[40])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("IsArtifical", ParseInt16(fields[41])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("WindowClientWidth", ParseInt16(fields[42])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("WindowClientHeight", ParseInt16(fields[43])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("ClientTimeZone", ParseInt16(fields[44])));
+  KUDU_RETURN_NOT_OK(writer->SetUnixTimeMicros("ClientEventTime", ParseInt64(fields[45])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("SilverlightVersion1", ParseInt16(fields[46])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("SilverlightVersion2", ParseInt16(fields[47])));
+  KUDU_RETURN_NOT_OK(writer->SetInt32("SilverlightVersion3", ParseInt32(fields[48])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("SilverlightVersion4", ParseInt16(fields[49])));
+  KUDU_RETURN_NOT_OK(writer->SetString("PageCharset", fields[50]));
+  KUDU_RETURN_NOT_OK(writer->SetInt32("CodeVersion", ParseInt32(fields[51])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("IsLink", ParseInt16(fields[52])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("IsDownload", ParseInt16(fields[53])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("IsNotBounce", ParseInt16(fields[54])));
+  KUDU_RETURN_NOT_OK(writer->SetInt64("FUniqID", ParseInt64(fields[55])));
+  KUDU_RETURN_NOT_OK(writer->SetString("OriginalURL", fields[56]));
+  KUDU_RETURN_NOT_OK(writer->SetInt32("HID", ParseInt32(fields[57])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("IsOldCounter", ParseInt16(fields[58])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("IsEvent", ParseInt16(fields[59])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("IsParameter", ParseInt16(fields[60])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("DontCountHits", ParseInt16(fields[61])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("WithHash", ParseInt16(fields[62])));
+  KUDU_RETURN_NOT_OK(writer->SetString("HitColor", fields[63]));
+  KUDU_RETURN_NOT_OK(writer->SetUnixTimeMicros("LocalEventTime", ParseInt64(fields[64])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("Age", ParseInt16(fields[65])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("Sex", ParseInt16(fields[66])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("Income", ParseInt16(fields[67])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("Interests", ParseInt16(fields[68])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("Robotness", ParseInt16(fields[69])));
+  KUDU_RETURN_NOT_OK(writer->SetInt32("RemoteIP", ParseInt32(fields[70])));
+  KUDU_RETURN_NOT_OK(writer->SetInt32("WindowName", ParseInt32(fields[71])));
+  KUDU_RETURN_NOT_OK(writer->SetInt32("OpenerName", ParseInt32(fields[72])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("HistoryLength", ParseInt16(fields[73])));
+  KUDU_RETURN_NOT_OK(writer->SetString("BrowserLanguage", fields[74]));
+  KUDU_RETURN_NOT_OK(writer->SetString("BrowserCountry", fields[75]));
+  KUDU_RETURN_NOT_OK(writer->SetString("SocialNetwork", fields[76]));
+  KUDU_RETURN_NOT_OK(writer->SetString("SocialAction", fields[77]));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("HTTPError", ParseInt16(fields[78])));
+  KUDU_RETURN_NOT_OK(writer->SetInt32("SendTiming", ParseInt32(fields[79])));
+  KUDU_RETURN_NOT_OK(writer->SetInt32("DNSTiming", ParseInt32(fields[80])));
+  KUDU_RETURN_NOT_OK(writer->SetInt32("ConnectTiming", ParseInt32(fields[81])));
+  KUDU_RETURN_NOT_OK(writer->SetInt32("ResponseStartTiming", ParseInt32(fields[82])));
+  KUDU_RETURN_NOT_OK(writer->SetInt32("ResponseEndTiming", ParseInt32(fields[83])));
+  KUDU_RETURN_NOT_OK(writer->SetInt32("FetchTiming", ParseInt32(fields[84])));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("SocialSourceNetworkID", ParseInt16(fields[85])));
+  KUDU_RETURN_NOT_OK(writer->SetString("SocialSourcePage", fields[86]));
+  KUDU_RETURN_NOT_OK(writer->SetInt64("ParamPrice", ParseInt64(fields[87])));
+  KUDU_RETURN_NOT_OK(writer->SetString("ParamOrderID", fields[88]));
+  KUDU_RETURN_NOT_OK(writer->SetString("ParamCurrency", fields[89]));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("ParamCurrencyID", ParseInt16(fields[90])));
+  KUDU_RETURN_NOT_OK(writer->SetString("OpenstatServiceName", fields[91]));
+  KUDU_RETURN_NOT_OK(writer->SetString("OpenstatCampaignID", fields[92]));
+  KUDU_RETURN_NOT_OK(writer->SetString("OpenstatAdID", fields[93]));
+  KUDU_RETURN_NOT_OK(writer->SetString("OpenstatSourceID", fields[94]));
+  KUDU_RETURN_NOT_OK(writer->SetString("UTMSource", fields[95]));
+  KUDU_RETURN_NOT_OK(writer->SetString("UTMMedium", fields[96]));
+  KUDU_RETURN_NOT_OK(writer->SetString("UTMCampaign", fields[97]));
+  KUDU_RETURN_NOT_OK(writer->SetString("UTMContent", fields[98]));
+  KUDU_RETURN_NOT_OK(writer->SetString("UTMTerm", fields[99]));
+  KUDU_RETURN_NOT_OK(writer->SetString("FromTag", fields[100]));
+  KUDU_RETURN_NOT_OK(writer->SetInt16("HasGCLID", ParseInt16(fields[101])));
+  KUDU_RETURN_NOT_OK(writer->SetInt64("RefererHash", ParseInt64(fields[102])));
+  KUDU_RETURN_NOT_OK(writer->SetInt64("URLHash", ParseInt64(fields[103])));
+  KUDU_RETURN_NOT_OK(writer->SetInt32("CLID", ParseInt32(fields[104])));
+  return Status::OK();
 }
 
 // Create the table schema matching FastData schema
@@ -485,244 +876,282 @@ static Status CreateTable(const shared_ptr<KuduClient>& client) {
 }
 
 // Insert data from TSV file into the table
-static Status InsertDataFromFile(const shared_ptr<KuduClient>& client,
-                                   const std::string& file_path,
-                                   IngestMetrics* metrics,
-                                   IngestResult* result) {
-  std::cout << "\nReading data from file: " << file_path << std::endl;
-  
-  // Open the file
-  std::ifstream infile(file_path);
+static Status BuildFileSegments(const std::string& file_path,
+                                int num_threads,
+                                std::vector<FileSegment>* segments) {
+  std::ifstream infile(file_path, std::ios::binary | std::ios::ate);
   if (!infile.is_open()) {
     return Status::IOError("Failed to open file: " + file_path);
   }
-  
-  // Open the table
+  std::streamoff file_size = infile.tellg();
+  if (file_size < 0) {
+    return Status::IOError("Failed to stat file: " + file_path);
+  }
+  infile.close();
+
+  int thread_count = std::max(1, num_threads);
+  if (file_size <= 0 || file_size / thread_count == 0) {
+    thread_count = 1;
+  }
+  std::streamoff segment_size = file_size / thread_count;
+  segments->clear();
+  segments->reserve(thread_count);
+
+  std::streamoff start = 0;
+  for (int i = 0; i < thread_count; ++i) {
+    std::streamoff end = (i == thread_count - 1) ? file_size : start + segment_size;
+    segments->push_back({start, end, i == thread_count - 1});
+    start = end;
+  }
+  return Status::OK();
+}
+
+static Status FlushSession(KuduSession* session,
+                           std::vector<double>* latencies,
+                           bool record_latency) {
+  if (!session) {
+    return Status::OK();
+  }
+  std::chrono::high_resolution_clock::time_point start_time;
+  if (record_latency) {
+    start_time = std::chrono::high_resolution_clock::now();
+  }
+  Status s = session->Flush();
+  if (!s.ok()) {
+    return s;
+  }
+  if (record_latency && latencies) {
+    auto end_time = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
+        end_time - start_time);
+    latencies->push_back(duration.count() / 1000.0);
+  }
+  return Status::OK();
+}
+
+static Status InsertSegmentFromFile(const shared_ptr<KuduClient>& client,
+                                    const std::string& file_path,
+                                    const FileSegment& segment,
+                                    const AppConfig& config,
+                                    IngestMetrics* metrics,
+                                    ThreadResult* result) {
+  if (!config.dry_run && !client) {
+    return Status::InvalidArgument("Kudu client required for writes");
+  }
+
+  std::ifstream infile(file_path, std::ios::binary);
+  if (!infile.is_open()) {
+    return Status::IOError("Failed to open file: " + file_path);
+  }
+
+  if (segment.start_offset > 0) {
+    infile.seekg(segment.start_offset - 1);
+    char previous = '\0';
+    infile.get(previous);
+    if (previous != '\n') {
+      std::string discard;
+      std::getline(infile, discard);
+    }
+  } else {
+    infile.seekg(segment.start_offset);
+  }
+
   shared_ptr<KuduTable> table;
-  KUDU_RETURN_NOT_OK(client->OpenTable(kTableName, &table));
-  
-  // Create a session
-  shared_ptr<KuduSession> session = client->NewSession();
-  
-  // Set flush mode to MANUAL_FLUSH for better performance
-  KUDU_RETURN_NOT_OK(session->SetFlushMode(KuduSession::MANUAL_FLUSH));
-  
-  // Set mutation buffer size
-  KUDU_RETURN_NOT_OK(session->SetMutationBufferSpace(100 * 1024 * 1024));  // 100MB
-  
-  // Set timeout
-  session->SetTimeoutMillis(60000);  // 60 seconds
-  
+  shared_ptr<KuduSession> session;
+  if (!config.dry_run) {
+    KUDU_RETURN_NOT_OK(client->OpenTable(kTableName, &table));
+    session = client->NewSession();
+    KUDU_RETURN_NOT_OK(session->SetFlushMode(KuduSession::MANUAL_FLUSH));
+    KUDU_RETURN_NOT_OK(session->SetMutationBufferSpace(
+        static_cast<int64_t>(config.buffer_size_mb) * 1024 * 1024));
+    session->SetTimeoutMillis(60000);
+  }
+
   std::string line;
   int64_t rows_read = 0;
   int64_t rows_inserted = 0;
   int64_t error_count = 0;
-  const int64_t kFlushInterval = 10000;  // Flush every 10k rows
-  
-  std::cout << "Inserting data..." << std::endl;
-  
+  int64_t rows_since_flush = 0;
+
   while (std::getline(infile, line)) {
-    if (line.empty()) continue;
-    rows_read++;
-    if (metrics && metrics->rows_read) {
-      metrics->rows_read->Increment();
-    }
-    
-    std::vector<std::string> fields = SplitByTab(line);
-    
-    // Expected 105 columns
-    if (fields.size() != 105) {
-      std::cerr << "Warning: Line " << rows_read
-                << " has " << fields.size() << " fields, expected 105. Skipping." 
-                << std::endl;
-      error_count++;
-      if (metrics && metrics->error_count) {
-        metrics->error_count->Increment();
+    if (!line.empty()) {
+      rows_read++;
+      if (metrics && metrics->rows_read) {
+        metrics->rows_read->Increment();
       }
-      continue;
-    }
-    
-    try {
-      std::unique_ptr<KuduInsert> insert(table->NewInsert());
-      KuduPartialRow* row = insert->mutable_row();
-      
-      // Parse and set values for all 105 columns
-      // The order matches the schema definition
-      KUDU_RETURN_NOT_OK(row->SetInt64("WatchID", ParseInt64(fields[0])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("JavaEnable", ParseInt16(fields[1])));
-      KUDU_RETURN_NOT_OK(row->SetString("Title", fields[2]));
-      KUDU_RETURN_NOT_OK(row->SetInt16("GoodEvent", ParseInt16(fields[3])));
-      KUDU_RETURN_NOT_OK(row->SetUnixTimeMicros("EventTime", ParseInt64(fields[4])));
-      KUDU_RETURN_NOT_OK(row->SetInt32("EventDate", ParseInt32(fields[5])));
-      KUDU_RETURN_NOT_OK(row->SetInt32("CounterID", ParseInt32(fields[6])));
-      KUDU_RETURN_NOT_OK(row->SetInt32("ClientIP", ParseInt32(fields[7])));
-      KUDU_RETURN_NOT_OK(row->SetInt32("RegionID", ParseInt32(fields[8])));
-      KUDU_RETURN_NOT_OK(row->SetInt64("UserID", ParseInt64(fields[9])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("CounterClass", ParseInt16(fields[10])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("OS", ParseInt16(fields[11])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("UserAgent", ParseInt16(fields[12])));
-      KUDU_RETURN_NOT_OK(row->SetString("URL", fields[13]));
-      KUDU_RETURN_NOT_OK(row->SetString("Referer", fields[14]));
-      KUDU_RETURN_NOT_OK(row->SetInt16("IsRefresh", ParseInt16(fields[15])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("RefererCategoryID", ParseInt16(fields[16])));
-      KUDU_RETURN_NOT_OK(row->SetInt32("RefererRegionID", ParseInt32(fields[17])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("URLCategoryID", ParseInt16(fields[18])));
-      KUDU_RETURN_NOT_OK(row->SetInt32("URLRegionID", ParseInt32(fields[19])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("ResolutionWidth", ParseInt16(fields[20])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("ResolutionHeight", ParseInt16(fields[21])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("ResolutionDepth", ParseInt16(fields[22])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("FlashMajor", ParseInt16(fields[23])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("FlashMinor", ParseInt16(fields[24])));
-      KUDU_RETURN_NOT_OK(row->SetString("FlashMinor2", fields[25]));
-      KUDU_RETURN_NOT_OK(row->SetInt16("NetMajor", ParseInt16(fields[26])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("NetMinor", ParseInt16(fields[27])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("UserAgentMajor", ParseInt16(fields[28])));
-      KUDU_RETURN_NOT_OK(row->SetString("UserAgentMinor", fields[29]));
-      KUDU_RETURN_NOT_OK(row->SetInt16("CookieEnable", ParseInt16(fields[30])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("JavascriptEnable", ParseInt16(fields[31])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("IsMobile", ParseInt16(fields[32])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("MobilePhone", ParseInt16(fields[33])));
-      KUDU_RETURN_NOT_OK(row->SetString("MobilePhoneModel", fields[34]));
-      KUDU_RETURN_NOT_OK(row->SetString("Params", fields[35]));
-      KUDU_RETURN_NOT_OK(row->SetInt32("IPNetworkID", ParseInt32(fields[36])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("TraficSourceID", ParseInt16(fields[37])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("SearchEngineID", ParseInt16(fields[38])));
-      KUDU_RETURN_NOT_OK(row->SetString("SearchPhrase", fields[39]));
-      KUDU_RETURN_NOT_OK(row->SetInt16("AdvEngineID", ParseInt16(fields[40])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("IsArtifical", ParseInt16(fields[41])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("WindowClientWidth", ParseInt16(fields[42])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("WindowClientHeight", ParseInt16(fields[43])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("ClientTimeZone", ParseInt16(fields[44])));
-      KUDU_RETURN_NOT_OK(row->SetUnixTimeMicros("ClientEventTime", ParseInt64(fields[45])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("SilverlightVersion1", ParseInt16(fields[46])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("SilverlightVersion2", ParseInt16(fields[47])));
-      KUDU_RETURN_NOT_OK(row->SetInt32("SilverlightVersion3", ParseInt32(fields[48])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("SilverlightVersion4", ParseInt16(fields[49])));
-      KUDU_RETURN_NOT_OK(row->SetString("PageCharset", fields[50]));
-      KUDU_RETURN_NOT_OK(row->SetInt32("CodeVersion", ParseInt32(fields[51])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("IsLink", ParseInt16(fields[52])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("IsDownload", ParseInt16(fields[53])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("IsNotBounce", ParseInt16(fields[54])));
-      KUDU_RETURN_NOT_OK(row->SetInt64("FUniqID", ParseInt64(fields[55])));
-      KUDU_RETURN_NOT_OK(row->SetString("OriginalURL", fields[56]));
-      KUDU_RETURN_NOT_OK(row->SetInt32("HID", ParseInt32(fields[57])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("IsOldCounter", ParseInt16(fields[58])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("IsEvent", ParseInt16(fields[59])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("IsParameter", ParseInt16(fields[60])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("DontCountHits", ParseInt16(fields[61])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("WithHash", ParseInt16(fields[62])));
-      KUDU_RETURN_NOT_OK(row->SetString("HitColor", fields[63]));
-      KUDU_RETURN_NOT_OK(row->SetUnixTimeMicros("LocalEventTime", ParseInt64(fields[64])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("Age", ParseInt16(fields[65])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("Sex", ParseInt16(fields[66])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("Income", ParseInt16(fields[67])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("Interests", ParseInt16(fields[68])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("Robotness", ParseInt16(fields[69])));
-      KUDU_RETURN_NOT_OK(row->SetInt32("RemoteIP", ParseInt32(fields[70])));
-      KUDU_RETURN_NOT_OK(row->SetInt32("WindowName", ParseInt32(fields[71])));
-      KUDU_RETURN_NOT_OK(row->SetInt32("OpenerName", ParseInt32(fields[72])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("HistoryLength", ParseInt16(fields[73])));
-      KUDU_RETURN_NOT_OK(row->SetString("BrowserLanguage", fields[74]));
-      KUDU_RETURN_NOT_OK(row->SetString("BrowserCountry", fields[75]));
-      KUDU_RETURN_NOT_OK(row->SetString("SocialNetwork", fields[76]));
-      KUDU_RETURN_NOT_OK(row->SetString("SocialAction", fields[77]));
-      KUDU_RETURN_NOT_OK(row->SetInt16("HTTPError", ParseInt16(fields[78])));
-      KUDU_RETURN_NOT_OK(row->SetInt32("SendTiming", ParseInt32(fields[79])));
-      KUDU_RETURN_NOT_OK(row->SetInt32("DNSTiming", ParseInt32(fields[80])));
-      KUDU_RETURN_NOT_OK(row->SetInt32("ConnectTiming", ParseInt32(fields[81])));
-      KUDU_RETURN_NOT_OK(row->SetInt32("ResponseStartTiming", ParseInt32(fields[82])));
-      KUDU_RETURN_NOT_OK(row->SetInt32("ResponseEndTiming", ParseInt32(fields[83])));
-      KUDU_RETURN_NOT_OK(row->SetInt32("FetchTiming", ParseInt32(fields[84])));
-      KUDU_RETURN_NOT_OK(row->SetInt16("SocialSourceNetworkID", ParseInt16(fields[85])));
-      KUDU_RETURN_NOT_OK(row->SetString("SocialSourcePage", fields[86]));
-      KUDU_RETURN_NOT_OK(row->SetInt64("ParamPrice", ParseInt64(fields[87])));
-      KUDU_RETURN_NOT_OK(row->SetString("ParamOrderID", fields[88]));
-      KUDU_RETURN_NOT_OK(row->SetString("ParamCurrency", fields[89]));
-      KUDU_RETURN_NOT_OK(row->SetInt16("ParamCurrencyID", ParseInt16(fields[90])));
-      KUDU_RETURN_NOT_OK(row->SetString("OpenstatServiceName", fields[91]));
-      KUDU_RETURN_NOT_OK(row->SetString("OpenstatCampaignID", fields[92]));
-      KUDU_RETURN_NOT_OK(row->SetString("OpenstatAdID", fields[93]));
-      KUDU_RETURN_NOT_OK(row->SetString("OpenstatSourceID", fields[94]));
-      KUDU_RETURN_NOT_OK(row->SetString("UTMSource", fields[95]));
-      KUDU_RETURN_NOT_OK(row->SetString("UTMMedium", fields[96]));
-      KUDU_RETURN_NOT_OK(row->SetString("UTMCampaign", fields[97]));
-      KUDU_RETURN_NOT_OK(row->SetString("UTMContent", fields[98]));
-      KUDU_RETURN_NOT_OK(row->SetString("UTMTerm", fields[99]));
-      KUDU_RETURN_NOT_OK(row->SetString("FromTag", fields[100]));
-      KUDU_RETURN_NOT_OK(row->SetInt16("HasGCLID", ParseInt16(fields[101])));
-      KUDU_RETURN_NOT_OK(row->SetInt64("RefererHash", ParseInt64(fields[102])));
-      KUDU_RETURN_NOT_OK(row->SetInt64("URLHash", ParseInt64(fields[103])));
-      KUDU_RETURN_NOT_OK(row->SetInt32("CLID", ParseInt32(fields[104])));
-      
-      Status s = session->Apply(insert.release());
-      if (!s.ok()) {
-        std::cerr << "Error applying insert for row " << rows_read << ": "
-                  << s.ToString() << std::endl;
+
+      std::vector<std::string> fields = SplitByTab(line);
+      if (fields.size() != 105) {
+        std::cerr << "Warning: Line " << rows_read
+                  << " has " << fields.size() << " fields, expected 105. Skipping."
+                  << std::endl;
         error_count++;
         if (metrics && metrics->error_count) {
           metrics->error_count->Increment();
         }
-        continue;
+      } else {
+        try {
+          std::unique_ptr<KuduInsert> insert;
+          KuduPartialRow* row = nullptr;
+          if (!config.dry_run) {
+            insert.reset(table->NewInsert());
+            row = insert->mutable_row();
+          }
+          RowWriter writer(row);
+          KUDU_RETURN_NOT_OK(PopulateRow(fields, &writer));
+
+          if (!config.dry_run) {
+            Status s = session->Apply(insert.release());
+            if (!s.ok()) {
+              std::cerr << "Error applying insert for row " << rows_read << ": "
+                        << s.ToString() << std::endl;
+              error_count++;
+              if (metrics && metrics->error_count) {
+                metrics->error_count->Increment();
+              }
+            } else {
+              rows_inserted++;
+              rows_since_flush++;
+              if (metrics && metrics->rows_inserted) {
+                metrics->rows_inserted->Increment();
+              }
+              if (config.flush_interval > 0 &&
+                  rows_since_flush >= config.flush_interval) {
+                KUDU_RETURN_NOT_OK(FlushSession(
+                    session.get(), &result->flush_latencies_ms, true));
+                rows_since_flush = 0;
+                if (config.num_threads == 1) {
+                  std::cout << "Processed " << rows_inserted << " rows..." << std::endl;
+                }
+              }
+            }
+          }
+        } catch (const std::exception& e) {
+          std::cerr << "Error parsing row " << rows_read << ": " << e.what() << std::endl;
+          error_count++;
+          if (metrics && metrics->error_count) {
+            metrics->error_count->Increment();
+          }
+        }
       }
-      
-      rows_inserted++;
-      if (metrics && metrics->rows_inserted) {
-        metrics->rows_inserted->Increment();
+    }
+
+    if (!segment.is_last) {
+      std::streamoff position = infile.tellg();
+      if (position != -1 && position >= segment.end_offset) {
+        break;
       }
-      
-      // Periodic flush for better performance
-      if (rows_inserted % kFlushInterval == 0) {
-        KUDU_RETURN_NOT_OK(session->Flush());
-        std::cout << "Processed " << rows_inserted << " rows..." << std::endl;
+    }
+  }
+
+  if (!config.dry_run) {
+    bool record_latency = rows_since_flush > 0;
+    KUDU_RETURN_NOT_OK(FlushSession(session.get(),
+                                    &result->flush_latencies_ms,
+                                    record_latency));
+
+    if (session->CountPendingErrors() > 0) {
+      std::vector<KuduError*> errors;
+      bool overflow = false;
+      session->GetPendingErrors(&errors, &overflow);
+
+      std::cerr << "\nErrors occurred during insertion:" << std::endl;
+      int displayed_errors = 0;
+      for (const auto* error : errors) {
+        if (displayed_errors < 10) {
+          std::cerr << "  - " << error->status().ToString() << std::endl;
+          displayed_errors++;
+        }
+        delete error;
       }
-      
-    } catch (const std::exception& e) {
-      std::cerr << "Error parsing row " << rows_read << ": " << e.what() << std::endl;
-      error_count++;
+
+      error_count += static_cast<int64_t>(errors.size());
       if (metrics && metrics->error_count) {
-        metrics->error_count->Increment();
+        for (size_t i = 0; i < errors.size(); ++i) {
+          metrics->error_count->Increment();
+        }
+      }
+
+      if (errors.size() > 10) {
+        std::cerr << "  ... and " << (errors.size() - 10) << " more errors"
+                  << std::endl;
+      }
+
+      if (overflow) {
+        std::cerr << "  - Error buffer overflowed; some errors were discarded"
+                  << std::endl;
       }
     }
   }
-  
-  // Final flush
-  KUDU_RETURN_NOT_OK(session->Flush());
-  
-  infile.close();
-  
-  // Check for errors
-  if (session->CountPendingErrors() > 0) {
-    std::vector<KuduError*> errors;
-    bool overflow;
-    session->GetPendingErrors(&errors, &overflow);
-    
-    std::cerr << "\nErrors occurred during insertion:" << std::endl;
-    int displayed_errors = 0;
-    for (const auto* error : errors) {
-      if (displayed_errors < 10) {  // Only show first 10 errors
-        std::cerr << "  - " << error->status().ToString() << std::endl;
-        displayed_errors++;
-      }
-      delete error;
-    }
-    
-    if (errors.size() > 10) {
-      std::cerr << "  ... and " << (errors.size() - 10) << " more errors" << std::endl;
-    }
-    
-    if (overflow) {
-      std::cerr << "  - Error buffer overflowed; some errors were discarded" << std::endl;
-    }
-  }
-  
-  std::cout << "\n✓ Successfully processed " << rows_inserted << " rows" << std::endl;
-  if (error_count > 0) {
-    std::cout << "✗ " << error_count << " rows had errors" << std::endl;
-  }
+
   if (result != nullptr) {
     result->rows_read = rows_read;
     result->rows_inserted = rows_inserted;
     result->error_count = error_count;
+  }
+
+  return Status::OK();
+}
+
+static Status InsertDataFromFile(const shared_ptr<KuduClient>& client,
+                                 const AppConfig& config,
+                                 IngestMetrics* metrics,
+                                 IngestResult* result) {
+  std::cout << "\nReading data from file: " << config.file_path << std::endl;
+  std::vector<FileSegment> segments;
+  KUDU_RETURN_NOT_OK(BuildFileSegments(config.file_path,
+                                       config.num_threads,
+                                       &segments));
+
+  std::cout << "Inserting data";
+  if (config.dry_run) {
+    std::cout << " (dry run)";
+  }
+  std::cout << " using " << segments.size() << " thread(s)..." << std::endl;
+
+  std::vector<ThreadResult> thread_results(segments.size());
+  std::vector<Status> thread_status(segments.size(), Status::OK());
+  std::vector<std::thread> threads;
+
+  if (segments.size() == 1) {
+    thread_status[0] = InsertSegmentFromFile(client, config.file_path, segments[0],
+                                             config, metrics, &thread_results[0]);
+  } else {
+    threads.reserve(segments.size());
+    for (size_t i = 0; i < segments.size(); ++i) {
+      threads.emplace_back([&, i]() {
+        thread_status[i] = InsertSegmentFromFile(client, config.file_path, segments[i],
+                                                 config, metrics, &thread_results[i]);
+      });
+    }
+    for (auto& thread : threads) {
+      thread.join();
+    }
+  }
+
+  for (const auto& status : thread_status) {
+    if (!status.ok()) {
+      return status;
+    }
+  }
+
+  IngestResult aggregate;
+  for (const auto& thread_result : thread_results) {
+    aggregate.rows_read += thread_result.rows_read;
+    aggregate.rows_inserted += thread_result.rows_inserted;
+    aggregate.error_count += thread_result.error_count;
+    aggregate.flush_latencies_ms.insert(aggregate.flush_latencies_ms.end(),
+                                        thread_result.flush_latencies_ms.begin(),
+                                        thread_result.flush_latencies_ms.end());
+  }
+
+  std::cout << "\n✓ Successfully processed " << aggregate.rows_read << " rows"
+            << std::endl;
+  if (aggregate.error_count > 0) {
+    std::cout << "✗ " << aggregate.error_count << " rows had errors" << std::endl;
+  }
+  if (result != nullptr) {
+    *result = aggregate;
   }
 
   return Status::OK();
@@ -740,36 +1169,46 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
-  auto metrics = StartMetrics(config.metrics_port);
+  auto metrics = StartMetrics(config);
 
   std::cout << "TSV File: " << config.file_path << std::endl;
   std::cout << "Connecting to Kudu master at: " << config.master_address << std::endl;
-  if (metrics) {
+  std::cout << "Run ID: " << config.run_id << std::endl;
+  if (config.metrics_port > 0) {
     std::cout << "Metrics endpoint: http://localhost:" << config.metrics_port
               << "/metrics" << std::endl;
   } else {
     std::cout << "Metrics endpoint: disabled" << std::endl;
   }
-  
-  // Create Kudu client
-  shared_ptr<KuduClient> client;
-  Status s = KuduClientBuilder()
-    .add_master_server_addr(config.master_address)
-    .Build(&client);
-  
-  if (!s.ok()) {
-    std::cerr << "Error creating Kudu client: " << s.ToString() << std::endl;
-    return 1;
+  if (!config.metrics_push_gateway.empty()) {
+    std::cout << "Metrics push gateway: " << config.metrics_push_gateway
+              << " (job=" << config.metrics_push_job << ")" << std::endl;
+  }
+  if (config.dry_run) {
+    std::cout << "Dry run: parsing TSV without writing to Kudu" << std::endl;
   }
   
-  std::cout << "✓ Connected to Kudu master" << std::endl;
-  std::cout << std::endl;
-  
-  // Create the table
-  s = CreateTable(client);
-  if (!s.ok()) {
-    std::cerr << "Error creating table: " << s.ToString() << std::endl;
-    return 1;
+  shared_ptr<KuduClient> client;
+  if (!config.dry_run) {
+    // Create Kudu client
+    Status s = KuduClientBuilder()
+      .add_master_server_addr(config.master_address)
+      .Build(&client);
+
+    if (!s.ok()) {
+      std::cerr << "Error creating Kudu client: " << s.ToString() << std::endl;
+      return 1;
+    }
+
+    std::cout << "✓ Connected to Kudu master" << std::endl;
+    std::cout << std::endl;
+
+    // Create the table
+    s = CreateTable(client);
+    if (!s.ok()) {
+      std::cerr << "Error creating table: " << s.ToString() << std::endl;
+      return 1;
+    }
   }
   
   // Start timer
@@ -777,7 +1216,7 @@ int main(int argc, char* argv[]) {
   
   // Insert data from file
   IngestResult ingest_result;
-  s = InsertDataFromFile(client, config.file_path, metrics.get(), &ingest_result);
+  Status s = InsertDataFromFile(client, config, metrics.get(), &ingest_result);
   if (!s.ok()) {
     std::cerr << "Error inserting data: " << s.ToString() << std::endl;
     return 1;
@@ -787,15 +1226,17 @@ int main(int argc, char* argv[]) {
   auto end_time = std::chrono::high_resolution_clock::now();
   auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
   double seconds = duration.count() / 1000.0;
-  double rows_per_second = seconds > 0.0
-      ? static_cast<double>(ingest_result.rows_inserted) / seconds
-      : 0.0;
+  double rows_processed = config.dry_run
+      ? static_cast<double>(ingest_result.rows_read)
+      : static_cast<double>(ingest_result.rows_inserted);
+  double rows_per_second = seconds > 0.0 ? rows_processed / seconds : 0.0;
   if (metrics) {
     metrics->elapsed_seconds->Set(seconds);
     metrics->rows_per_second->Set(rows_per_second);
   }
   WriteMetricsSummary(config.metrics_output_path, ingest_result, seconds,
                       rows_per_second);
+  PushMetrics(metrics.get(), config);
   
   std::cout << std::endl;
   std::cout << std::string(80, '=') << std::endl;
@@ -803,6 +1244,9 @@ int main(int argc, char* argv[]) {
   std::cout << "Time taken: " << seconds << " seconds" << std::endl;
   std::cout << std::string(80, '=') << std::endl;
   std::cout << std::endl;
+  std::cout << BuildJsonSummary(ingest_result, seconds, rows_per_second, false,
+                                true)
+            << std::endl;
 
   KeepMetricsAlive(config);
 
