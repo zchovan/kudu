@@ -109,6 +109,8 @@ libs += [
     flinkStreamingJava   : "org.apache.flink:flink-streaming-java:$versions.flink",
     guava                : "com.google.guava:guava:$versions.guava",
     hadoopClient         : "org.apache.hadoop:hadoop-client:$versions.hadoop",
+    hadoopClientApi      : "org.apache.hadoop:hadoop-client-api:$versions.hadoop",
+    hadoopClientRuntime  : "org.apache.hadoop:hadoop-client-runtime:$versions.hadoop",
     hadoopCommon         : "org.apache.hadoop:hadoop-common:$versions.hadoop",
     hadoopHdfs           : "org.apache.hadoop:hadoop-hdfs:$versions.hadoop",
     hadoopMiniCluster    : "org.apache.hadoop:hadoop-minicluster:$versions.hadoop",

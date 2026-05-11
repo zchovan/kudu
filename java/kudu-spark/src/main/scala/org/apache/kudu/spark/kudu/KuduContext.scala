@@ -586,7 +586,18 @@ private object KuduContext {
    */
   @nowarn("cat=deprecation")
   private def getSubject(sc: SparkContext): Subject = {
-    val subject = Subject.getSubject(AccessController.getContext)
+    val subject = try {
+      // Prefer Subject.current() on modern JDKs where getSubject() is disabled.
+      classOf[Subject].getDeclaredMethod("current").invoke(null).asInstanceOf[Subject]
+    } catch {
+      case _: NoSuchMethodException =>
+        Subject.getSubject(AccessController.getContext)
+      case _: UnsupportedOperationException =>
+        Subject.getSubject(AccessController.getContext)
+      case e: java.lang.reflect.InvocationTargetException
+          if e.getCause.isInstanceOf[UnsupportedOperationException] =>
+        Subject.getSubject(AccessController.getContext)
+    }
 
     val principal =
       sc.getConf.getOption("spark.yarn.principal").getOrElse(return subject)
