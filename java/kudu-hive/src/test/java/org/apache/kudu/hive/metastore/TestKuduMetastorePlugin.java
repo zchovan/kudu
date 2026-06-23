@@ -61,6 +61,11 @@ public class TestKuduMetastorePlugin {
         ImmutableMap.of(KuduMetastorePlugin.KUDU_MASTER_EVENT_KEY, "true"));
   }
 
+  @SuppressWarnings("deprecation")
+  private Table getTable(Table table) throws TException {
+    return client.getTable(table.getDbName(), table.getTableName());
+  }
+
   public void startCluster(boolean syncEnabled) throws Exception {
     Configuration hmsConf = MetastoreConf.newMetastoreConf();
 
@@ -258,11 +263,11 @@ public class TestKuduMetastorePlugin {
     Table initTable = newTable("table");
     client.createTable(initTable, masterContext());
     // Get the table from the HMS in case any translation occurred.
-    Table table = client.getTable(initTable.getDbName(), initTable.getTableName());
+    Table table = getTable(initTable);
     Table legacyTable = newLegacyTable("legacy_table");
     client.createTable(legacyTable, masterContext());
     // Get the table from the HMS in case any translation occurred.
-    legacyTable = client.getTable(legacyTable.getDbName(), legacyTable.getTableName());
+    legacyTable = getTable(legacyTable);
     try {
       // Check that altering the table succeeds.
       client.alter_table(table.getDbName(), table.getTableName(), table);
@@ -448,7 +453,7 @@ public class TestKuduMetastorePlugin {
       table = initTable.deepCopy();
       table.getParameters().clear();
       client.createTable(table);
-      table = client.getTable(table.getDbName(), table.getTableName());
+      table = getTable(table);
       try {
 
         // Try to alter the table and add a Kudu table ID.
@@ -506,7 +511,7 @@ public class TestKuduMetastorePlugin {
       table.putToParameters(KuduMetastorePlugin.EXTERNAL_TABLE_KEY, "TRUE");
       table.putToParameters(KuduMetastorePlugin.EXTERNAL_PURGE_KEY, "FALSE");
       client.createTable(table);
-      table = client.getTable(table.getDbName(), table.getTableName());
+      table = getTable(table);
       try {
         client.alter_table(table.getDbName(), table.getTableName(), table);
       } finally {
@@ -522,7 +527,7 @@ public class TestKuduMetastorePlugin {
     Table table = newLegacyTable("legacy_table");
     client.createTable(table);
     // Get the table from the HMS in case any translation occurred.
-    table = client.getTable(table.getDbName(), table.getTableName());
+    table = getTable(table);
 
     // Check that altering legacy table's schema succeeds.
     {
@@ -634,7 +639,7 @@ public class TestKuduMetastorePlugin {
     Table table = newTable("table");
     client.createTable(table);
     // Get the table from the HMS in case any translation occurred.
-    table = client.getTable(table.getDbName(), table.getTableName());
+    table = getTable(table);
 
     // A Kudu table should should be allowed to be altered via Hive.
     // Add a column to the original table.

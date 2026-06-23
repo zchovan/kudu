@@ -28,7 +28,6 @@ import java.util.HashMap;
 import java.util.Map;
 import javax.annotation.concurrent.GuardedBy;
 
-import com.google.common.base.Throwables;
 import com.google.common.net.InetAddresses;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.apache.yetus.audience.InterfaceStability;
@@ -152,7 +151,10 @@ public class FakeDNS {
         method.setAccessible(true);
         return (InetAddress[]) method.invoke(fallbackNameService, host);
       } catch (ReflectiveOperationException e) {
-        Throwables.propagateIfPossible(e.getCause(), UnknownHostException.class);
+        Throwable cause = e.getCause();
+        if (cause instanceof UnknownHostException) {
+          throw (UnknownHostException) cause;
+        }
         throw new AssertionError("unexpected reflection issue", e);
       }
     }
@@ -176,7 +178,10 @@ public class FakeDNS {
         method.setAccessible(true);
         return (String) method.invoke(fallbackNameService, (Object) addr);
       } catch (ReflectiveOperationException e) {
-        Throwables.propagateIfPossible(e.getCause(), UnknownHostException.class);
+        Throwable cause = e.getCause();
+        if (cause instanceof UnknownHostException) {
+          throw (UnknownHostException) cause;
+        }
         throw new AssertionError("unexpected reflection issue", e);
       }
     }

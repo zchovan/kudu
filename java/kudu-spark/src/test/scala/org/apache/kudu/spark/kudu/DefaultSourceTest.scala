@@ -31,7 +31,6 @@ import org.apache.spark.sql.types.StructField
 import org.apache.spark.sql.types.StructType
 import org.junit.Assert._
 import org.apache.kudu.client.CreateTableOptions
-import org.apache.kudu.client.KuduException
 import org.apache.kudu.test.KuduTestHarness
 import org.apache.kudu.test.RandomUtils
 import org.apache.kudu.spark.kudu.SparkListenerUtil.withJobTaskCounter
