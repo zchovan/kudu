@@ -67,7 +67,8 @@ public class DistTestTask extends DefaultTask {
   String distTestBin = getProject().getRootDir() + "/../build-support/dist_test.py";
 
   @OutputDirectory
-  File outputDir = new File(getProject().getBuildDir(), "dist-test");
+  File outputDir = new File(getProject().getLayout().getBuildDirectory().get().getAsFile(),
+      "dist-test");
 
   private List<Test> testTasks = Lists.newArrayList();
 
@@ -317,8 +318,8 @@ public class DistTestTask extends DefaultTask {
     final FileTree testClassFiles = testTask.getCandidateClassFiles();
     if (testTask.isScanForTestClasses()) {
       TestFrameworkDetector testFrameworkDetector = testTask.getTestFramework().getDetector();
-      testFrameworkDetector.setTestClasses(testTask.getTestClassesDirs().getFiles());
-      testFrameworkDetector.setTestClasspath(testTask.getClasspath().getFiles());
+      testFrameworkDetector.setTestClasses(new ArrayList<>(testTask.getTestClassesDirs().getFiles()));
+      testFrameworkDetector.setTestClasspath(new ArrayList<>(testTask.getClasspath().getFiles()));
       detector = new DefaultTestClassScanner(testClassFiles, testFrameworkDetector, processor);
     } else {
       detector = new DefaultTestClassScanner(testClassFiles, null, processor);

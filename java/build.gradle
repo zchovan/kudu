@@ -86,21 +86,40 @@ task javadocAggregate(type: Javadoc, group: "Documentation") {
   destinationDir = file("${buildDir}/docs/javadoc")
 }
 
+// The subprojects whose tests participate in the distributed test run.
+// kudu-jepsen is excluded: it is a Clojure-only module that disables all of
+// its tasks on JDK 12+ and whose tests never run as dist-tests. Including it
+// would also make the tasks below resolve its testRuntimeClasspath without it
+// ever being resolved in-project, which Gradle 9 forbids (see below).
+def distTestSubprojects = subprojects.findAll { it.name != "kudu-jepsen" }
+
 // Copies all the dependency jars locally so that we can reference
 // them inside the project structure while running the distributed
 // tests instead of in the gradle cache which is in the users home
 // directory by default.
-task copyDistTestJars(type: Copy) {
-  into "$buildDir/jars/"
-  from subprojects.collect {
-    it.configurations.testRuntimeClasspath
+//
+// Each subproject copies its own test runtime classpath into the shared
+// jars directory. Gradle 9 forbids a task in one project from resolving
+// another project's configuration (here testRuntimeClasspath) directly,
+// so the aggregating root task below only wires up the per-project copies.
+configure(distTestSubprojects) {
+  tasks.register("copyDistTestJars", Copy) {
+    into "${rootProject.buildDir}/jars/"
+    from configurations.testRuntimeClasspath
+    duplicatesStrategy = DuplicatesStrategy.INCLUDE
   }
 }
 
+task copyDistTestJars {
+  dependsOn distTestSubprojects.collect { it.tasks.named("copyDistTestJars") }
+}
+
 // Task called by dist_test.py to generate the needed .isolate and .gen.json
-// files needed to run the distributed tests.
+// files needed to run the distributed tests. It only reads each test task's
+// classpath, which the per-project copyDistTestJars tasks above have already
+// resolved in-project, so distTest never triggers cross-project resolution.
 task distTest(type: DistTestTask, dependsOn: copyDistTestJars) {
-  subprojects.each {
+  distTestSubprojects.each {
     it.tasks.withType(Test).each {
       addTestTask it
     }

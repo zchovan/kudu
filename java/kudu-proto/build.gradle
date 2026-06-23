@@ -40,5 +40,10 @@ javadoc {
   enabled = false
 }
 
+// SpotBugs is not actionable on generated protobuf classes and emits
+// pervasive false positives (e.g. getDescriptor()/singleton patterns).
+spotbugsMain.enabled = false
+spotbugsTest.enabled = false
+
 // Skip publishing kudu-proto artifact because it will always be shaded into kudu-client.
 disablePublishing()

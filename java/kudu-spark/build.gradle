@@ -84,7 +84,9 @@ shadowJar {
 }
 
 // Adjust the artifact name to include the spark and scala base versions.
-archivesBaseName = "kudu-spark${versions.sparkBase}_${versions.scalaBase}"
+base {
+  archivesName = "kudu-spark${versions.sparkBase}_${versions.scalaBase}"
+}
 
 tasks.withType(com.github.spotbugs.snom.SpotBugsTask) {
   // This class causes SpotBugs runtime errors, so we completely ignore it from analysis.

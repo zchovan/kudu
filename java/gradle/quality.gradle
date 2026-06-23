@@ -17,6 +17,9 @@
 
 // This file contains common tasks and configuration for checking the quality of the code.
 
+import com.github.spotbugs.snom.Confidence
+import com.github.spotbugs.snom.Effort
+
 apply plugin: "com.github.spotbugs"   // Performs static code analysis to look for bugs in Java code.
 apply plugin: "com.github.ben-manes.versions" // Provides a task to determine which dependencies have updates.
 apply plugin: "ru.vyarus.animalsniffer" // Ensures Java code uses APIs from a particular version of Java.
@@ -38,7 +41,7 @@ if (!propertyExists("skipCodeStyleChecks")) {
   apply plugin: "checkstyle"
 
   // Automatically formats Scala code on each build.
-  apply plugin: "scalafmt"
+  apply plugin: "cz.augi.gradle.scalafmt"
 
   checkstyle {
     toolVersion = versions.checkstyle
@@ -46,6 +49,15 @@ if (!propertyExists("skipCodeStyleChecks")) {
     ignoreFailures = ignoreCheckFailures
     maxWarnings = 0
     showViolations = true
+  }
+
+  // Generated sources (e.g., protobuf output) are machine-produced and do not
+  // follow our handwritten style rules; exclude them from Checkstyle input.
+  tasks.withType(Checkstyle).configureEach {
+    exclude { details ->
+      details.file.toPath().startsWith(
+          project.layout.buildDirectory.dir("generated").get().asFile.toPath())
+    }
   }
 
   // Create an aggregate checkstyle task.
@@ -67,17 +79,16 @@ if (!propertyExists("skipCodeStyleChecks")) {
 }
 
 spotbugs {
-  toolVersion = versions.spotBugs
   ignoreFailures = ignoreCheckFailures
-  effort = "max"
-  reportLevel = "low"
+  effort = Effort.valueOf("MAX")
+  reportLevel = Confidence.valueOf("LOW")
   excludeFilter = file("$rootProject.projectDir/config/spotbugs/excludeFilter.xml")
 }
 
 tasks.withType(com.github.spotbugs.snom.SpotBugsTask) {
   reports {
-    xml.enabled false
-    html.enabled true
+    xml.required = false
+    html.required = true
   }
 }
 
@@ -125,9 +136,9 @@ if (project.name != "kudu-proto" && project.name != "kudu-jepsen" &&
   }
   tasks.withType(JacocoReport) {
     reports {
-      csv.enabled false
-      xml.enabled true
-      html.enabled true
+      csv.required = false
+      xml.required = true
+      html.required = true
     }
   }
   // In coverage builds (-PgenerateCoverage), wire jacocoTestReport as a

@@ -88,4 +88,6 @@ shadowJar {
 }
 
 // Adjust the artifact name to match the maven build.
-archivesBaseName = "kudu-spark${versions.sparkBase}-tools_${versions.scalaBase}"
+base {
+  archivesName = "kudu-spark${versions.sparkBase}-tools_${versions.scalaBase}"
+}

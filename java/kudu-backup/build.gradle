@@ -108,7 +108,9 @@ shadowJar {
 }
 
 // Adjust the artifact name to match the maven build.
-archivesBaseName = "kudu-backup${versions.sparkBase}_${versions.scalaBase}"
+base {
+  archivesName = "kudu-backup${versions.sparkBase}_${versions.scalaBase}"
+}
 
 // kudu-backup has no public Javadoc.
 javadoc {
