@@ -38,7 +38,7 @@ import org.apache.yetus.audience.InterfaceAudience;
  * Utility class that manages common configurations to run a subprocess.
  */
 @InterfaceAudience.Private
-public class SubprocessConfiguration {
+public final class SubprocessConfiguration {
   private int queueSize;
   private static final int QUEUE_SIZE_DEFAULT = 100;
   private int maxMsgParserThreads;

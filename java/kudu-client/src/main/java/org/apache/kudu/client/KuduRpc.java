@@ -154,18 +154,30 @@ public abstract class KuduRpc<R> {
   ExternalConsistencyMode externalConsistencyMode = CLIENT_PROPAGATED;
 
   /**
-   * How many times have we retried this RPC?.
-   * Proper synchronization is required, although in practice most of the code
-   * that access this attribute will have a happens-before relationship with
-   * the rest of the code, due to other existing synchronization.
+   * How many times have we retried this RPC?. Accessed only through the
+   * synchronized {@link #nextAttempt()}, {@link #getAttempt()} and
+   * {@link #resetAttempt()} accessors, which provide the required mutual
+   * exclusion and visibility across threads.
    */
-  int attempt;  // package-private for RpcProxy and AsyncKuduClient only.
+  private int attempt;
 
   /**
    * Set by RpcProxy when isRequestTracked returns true to identify this RPC in the sequence of
    * RPCs sent by this client. Once it is set it should never change unless the RPC is reused.
    */
-  private long sequenceId = RequestTracker.NO_SEQ_NO;
+  private volatile long sequenceId = RequestTracker.NO_SEQ_NO;
+
+  synchronized int nextAttempt() {
+    return ++attempt;
+  }
+
+  synchronized int getAttempt() {
+    return attempt;
+  }
+
+  private synchronized void resetAttempt() {
+    attempt = 0;
+  }
 
   KuduRpc(KuduTable table, Timer timer, long timeoutMillis) {
     this.table = table;
@@ -261,7 +273,7 @@ public abstract class KuduRpc<R> {
       return;
     }
     deferred = null;
-    attempt = 0;
+    resetAttempt();
     // If the subclass is a "tracked RPC" unregister it, unless it never
     // got to the point of being registered.
     if (isRequestTracked() && sequenceId != RequestTracker.NO_SEQ_NO) {
@@ -396,7 +408,7 @@ public abstract class KuduRpc<R> {
     } else {
       buf.append(tablet.getTabletId());
     }
-    buf.append(", attempt=").append(attempt);
+    buf.append(", attempt=").append(getAttempt());
     if (isRequestTracked()) {
       buf.append(", sequence_id=").append(sequenceId);
     }

@@ -935,15 +935,17 @@ public class AsyncKuduSession implements SessionConfiguration {
 
     // NOTE: This param is different from operations.size().
     // It's the number of total buffer operation size, mainly used to count the used buffer size.
-    private long operationSize;
+    private volatile long operationSize;
     private FlusherTask flusherTask = null;
 
     private Deferred<Void> flushNotification = Deferred.fromResult(null);
     private boolean flushNotificationFired = false;
 
     public void addOperation(BufferedOperation operation) {
-      operations.add(operation);
-      operationSize += operation.getOperation().getRow().size();
+      synchronized (monitor) {
+        operations.add(operation);
+        operationSize += operation.getOperation().getRow().size();
+      }
     }
 
     @Override
@@ -960,7 +962,9 @@ public class AsyncKuduSession implements SessionConfiguration {
     }
 
     public long bufferSize() {
-      return operationSize;
+      synchronized (monitor) {
+        return operationSize;
+      }
     }
 
     @GuardedBy("monitor")
