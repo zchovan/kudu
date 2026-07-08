@@ -72,6 +72,11 @@ dependencies {
 
 shadowJar {
   dependencies {
+    // protobuf-java is already shaded (and relocated) into the kudu-client and kudu-spark
+    // jars we bundle via the "shadow" configuration. Excluding the raw artifact here avoids
+    // relocating a second, identical copy to the same coordinates (shadow duplicate-entry
+    // warning). The versions are forced to match, so the bundled shaded copy is authoritative.
+    exclude(dependency(libs.protobufJava))
     exclude(dependency(libs.jsr305))
     exclude(dependency("log4j:log4j::.*"))
     exclude(dependency("com.fasterxml.jackson.core::.*"))

@@ -68,6 +68,10 @@ subprojects {
   configurations.all {
     resolutionStrategy {
       force libs.guava
+      // kudu-client bundles HdrHistogram (2.1.12) transitively via micrometer, while
+      // kudu-spark depends on it directly. Force a single version everywhere so the shaded
+      // artifacts don't diverge and downstream modules can safely drop the duplicate copy.
+      force libs.hdrhistogram
       if (project.name == "kudu-spark" || project.name == "kudu-spark-tools") {
         force libs.hadoopClientApi
         force libs.hadoopClientRuntime

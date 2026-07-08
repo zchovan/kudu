@@ -20,7 +20,14 @@ apply plugin: "java-library"
 apply from: "$rootDir/gradle/shadow.gradle"
 
 dependencies {
-  implementation project(path: ":kudu-backup-common")
+  // hadoop is provided on the runtime classpath when the tool is launched
+  // (e.g. `java -cp $(hadoop classpath):kudu-backup-tools.jar ...`), so it must not be
+  // bundled here. Excluding it also keeps its transitive raw copies of guava/netty/protobuf
+  // out of the shaded jar, where they would otherwise be relocated on top of the copies
+  // already shaded into kudu-client and produce duplicate-entry warnings.
+  implementation(project(path: ":kudu-backup-common")) {
+    exclude group: "org.apache.hadoop"
+  }
   implementation project(path: ":kudu-client", configuration: "shadow")
   implementation libs.protobufJava
   implementation (libs.scopt)  {
@@ -47,6 +54,11 @@ dependencies {
 
 shadowJar {
   dependencies {
+    // protobuf-java is already shaded (and relocated) into the kudu-client jar we bundle via
+    // the "shadow" configuration. Excluding the raw artifact avoids relocating a second,
+    // identical copy to the same coordinates (shadow duplicate-entry warning). Versions are
+    // forced to match, so the bundled shaded copy is authoritative.
+    exclude(dependency(libs.protobufJava))
     minimize()
   }
 }

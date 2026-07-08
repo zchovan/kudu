@@ -50,6 +50,9 @@ dependencies {
 
 shadowJar {
   dependencies {
+    // HdrHistogram is already shaded into the kudu-client jar we bundle; excluding the raw
+    // artifact here avoids a second, relocated copy (KUDU shadow duplicate-entry warning).
+    exclude(dependency("org.hdrhistogram:HdrHistogram:.*"))
     exclude(dependency("com.fasterxml.jackson.core::.*"))
     exclude(dependency("com.github.luben::.*"))
     exclude(dependency("javax.servlet.jsp::.*"))
