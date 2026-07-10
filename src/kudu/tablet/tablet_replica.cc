@@ -907,6 +907,34 @@ void TabletReplica::FinishConsensusOnlyRound(ConsensusRound* round) {
   }
 }
 
+void TabletReplica::SubmitNoOpToAdvanceMvcc() {
+  // Schedule the no-op onto the prepare pool token: the same serial executor
+  // that assigns timestamps to and appends write ops (see op_driver.cc).
+  // Serializing here is exactly what guarantees the no-op's timestamp is
+  // assigned in OpId order relative to writes; otherwise the no-op could take a
+  // higher timestamp but a lower OpId than a concurrent write and abort the
+  // tserver via the MVCC invariant. See RaftConsensus::ReplicateNoOpToAdvanceMvcc().
+  //
+  // This is invoked while RaftConsensus holds its lock (from
+  // CompleteConfigChangeRoundUnlocked()), so we only enqueue work here. As with
+  // the submit in FinishConsensusOnlyRound() above, the prepare pool token is
+  // guaranteed to be running: TabletReplica::Stop() stops RaftConsensus before
+  // it stops the token, and this runs while the RaftConsensus lock is held.
+  WARN_NOT_OK(prepare_pool_token_->Submit([this]() {
+    std::shared_ptr<consensus::RaftConsensus> consensus;
+    {
+      std::lock_guard l(lock_);
+      if (state_ != RUNNING && state_ != BOOTSTRAPPING) {
+        return;
+      }
+      consensus = consensus_;
+    }
+    if (consensus) {
+      consensus->ReplicateNoOpToAdvanceMvcc();
+    }
+  }), "could not schedule no-op to advance MVCC after config change");
+}
+
 Status TabletReplica::NewLeaderOpDriver(unique_ptr<Op> op,
                                         shared_ptr<OpDriver>* driver,
                                         MonoTime deadline) {

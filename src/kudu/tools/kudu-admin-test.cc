@@ -334,7 +334,10 @@ TEST_F(AdminCliTest, TestChangeConfig) {
   // Wait for all servers to replicate everything up through the last write op.
   // Since we don't batch, there should be at least # rows inserted log entries,
   // plus the initial leader's no-op, plus 1 for
-  // the added replica for a total == #rows + 2.
+  // the added replica for a total == #rows + 2. This is a lower bound: adding
+  // the replica as a voter also triggers an MVCC-advancing no-op (KUDU-3163),
+  // so the actual committed index is higher, which WaitForServersToAgree()
+  // tolerates.
   int min_log_index = num_batches + 2;
   ASSERT_OK(WaitForServersToAgree(MonoDelta::FromSeconds(30),
                                   active_tablet_servers, tablet_id_,

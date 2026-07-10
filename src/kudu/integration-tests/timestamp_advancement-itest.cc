@@ -80,6 +80,7 @@ DECLARE_bool(prevent_kudu_2233_corruption);
 DECLARE_bool(log_preallocate_segments);
 DECLARE_bool(log_async_preallocate_segments);
 DECLARE_bool(raft_enable_pre_election);
+DECLARE_bool(raft_replicate_noop_on_voter_addition);
 DECLARE_double(compaction_minimum_improvement);
 DECLARE_double(leader_failure_max_missed_heartbeat_periods);
 DECLARE_int32(consensus_inject_latency_ms_in_notifications);
@@ -413,7 +414,14 @@ TEST_F(TimestampAdvancementITest, TestNoOpAdvancesMvccSafeTimeOnBootstrap) {
 // if a tablet's MVCC snapshot hasn't advanced. Currently, the only way to
 // achieve this is if the cluster is restarted, the WAL only has change
 // configs, and the tablet cannot join a quorum.
+//
+// This exercises the scan-rejection safety net, so it disables the KUDU-3163
+// behavior where the leader replicates a no-op after a voter is added or
+// promoted -- otherwise those no-ops would leave MVCC-advancing ops in the WAL
+// and the "only change configs" precondition could not be established. See
+// TestNoOpAfterVoterAdditionAdvancesMvcc for coverage of that behavior.
 TEST_F(TimestampAdvancementITest, Kudu2463Test) {
+  FLAGS_raft_replicate_noop_on_voter_addition = false;
   scoped_refptr<TabletReplica> replica;
   NO_FATALS(SetupClusterWithWritesInWAL(kTserver, /*delete_and_reinsert=*/false, &replica));
   MiniTabletServer* ts = tserver(kTserver);
@@ -450,6 +458,55 @@ TEST_F(TimestampAdvancementITest, Kudu2463Test) {
   ASSERT_EQ(error.code(), TabletServerErrorPB::TABLET_NOT_RUNNING);
   ASSERT_STR_CONTAINS(resp.error().status().message(), "clean time has not yet been initialized");
   ASSERT_EQ(error.status().code(), AppStatusPB::UNINITIALIZED);
+}
+
+// KUDU-3163: the counterpart to Kudu2463Test. With the default behavior, the
+// leader replicates a Raft no-op right after a voter is added or promoted, so a
+// replica whose WAL would otherwise contain only change configs still
+// initializes its MVCC clean time from that no-op. Verify that the same
+// sequence that leaves a replica permanently stuck in Kudu2463Test (with the
+// behavior disabled) instead recovers here: after restart the replica's clean
+// time is initialized and it can serve scans.
+TEST_F(TimestampAdvancementITest, TestNoOpAfterVoterAdditionAdvancesMvcc) {
+  // This is the default; set it explicitly to document what the test exercises.
+  FLAGS_raft_replicate_noop_on_voter_addition = true;
+
+  scoped_refptr<TabletReplica> replica;
+  NO_FATALS(SetupClusterWithWritesInWAL(kTserver, /*delete_and_reinsert=*/false, &replica));
+  MiniTabletServer* ts = tserver(kTserver);
+  const string tablet_id = replica->tablet_id();
+
+  // Generate a bunch of config changes in all the replicas' WALs by repeatedly
+  // changing a follower's member type. Each promotion back to VOTER causes the
+  // leader to replicate an MVCC-advancing no-op.
+  TServerDetails* leader;
+  ASSERT_OK(FindTabletLeader(ts_map_, tablet_id, kTimeout, &leader));
+  vector<TServerDetails*> followers;
+  ASSERT_EVENTUALLY([&] {
+    ASSERT_OK(FindTabletFollowers(ts_map_, tablet_id, kTimeout, &followers));
+  });
+  ASSERT_FALSE(followers.empty());
+  for (int i = 0; i < 20; i++) {
+    RaftPeerPB::MemberType type = i % 2 == 0 ? RaftPeerPB::NON_VOTER : RaftPeerPB::VOTER;
+    WARN_NOT_OK(ChangeReplicaType(leader, tablet_id, followers[0], type, kTimeout),
+                "Couldn't send a change config!");
+  }
+  NO_FATALS(GCUntilNoWritesInWAL(ts, replica));
+
+  // Note: we need to reset the replica reference before restarting the server.
+  replica.reset();
+  ASSERT_OK(ShutdownAllNodesAndRestartTserver(ts, tablet_id));
+
+  // Unlike Kudu2463Test, the WAL contains a Raft no-op replicated after the
+  // voter changes, whose timestamp initializes MVCC clean time on bootstrap.
+  replica = tablet_replica_on_ts(kTserver);
+  ASSERT_NE(Timestamp::kInitialTimestamp,
+            replica->tablet()->mvcc_manager()->GetCleanTimestamp());
+
+  // Consequently the scan succeeds rather than being rejected with
+  // TABLET_NOT_RUNNING / "clean time has not yet been initialized".
+  ScanResponsePB resp = ScanResponseForTablet(kTserver, tablet_id);
+  ASSERT_FALSE(resp.has_error()) << SecureShortDebugString(resp);
 }
 
 // Test to ensure that MVCC's current snapshot gets updated via Raft no-ops, in

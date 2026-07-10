@@ -104,6 +104,18 @@ DEFINE_bool(evict_failed_followers, true,
 TAG_FLAG(evict_failed_followers, advanced);
 TAG_FLAG(evict_failed_followers, runtime);
 
+DEFINE_bool(raft_replicate_noop_on_voter_addition, true,
+            "Whether the leader replicates a Raft no-op immediately after "
+            "committing a config change that adds or promotes a voter. The "
+            "no-op carries a timestamp that initializes the new voter's MVCC "
+            "clean time, so that a freshly tablet-copied replica of a tablet "
+            "that takes no writes can serve snapshot scans without waiting for "
+            "a future write or leader election (KUDU-3163). Turning this off "
+            "restores the previous behavior, where such a replica can reject "
+            "scans with TABLET_NOT_RUNNING until an MVCC-advancing op arrives.");
+TAG_FLAG(raft_replicate_noop_on_voter_addition, advanced);
+TAG_FLAG(raft_replicate_noop_on_voter_addition, runtime);
+
 DEFINE_bool(follower_reject_update_consensus_requests, false,
             "Whether a follower will return an error for all UpdateConsensus() requests. "
             "Warning! This is only intended for testing.");
@@ -2958,6 +2970,38 @@ void RaftConsensus::CompleteConfigChangeRoundUnlocked(ConsensusRound* round, con
         << DiffRaftConfigs(old_config, new_config)
         << ". New config: { " << SecureShortDebugString(new_config) << " }";
     CHECK_OK(SetCommittedConfigUnlocked(new_config));
+
+    // If this config change brought a new voter into the config (either a
+    // freshly-added VOTER or a NON_VOTER promoted to VOTER), replicate a Raft
+    // no-op so that voter receives an MVCC-advancing op and initializes its
+    // clean time. Without this, a freshly tablet-copied replica of a cold
+    // tablet can get stuck rejecting all scans if leadership never changes
+    // again (KUDU-3163).
+    //
+    // Only the leader replicates. We hand the request to the round handler
+    // rather than scheduling it ourselves, because the no-op's timestamp must
+    // be assigned in OpId order relative to concurrent writes (see
+    // ReplicateNoOpToAdvanceMvcc() and the note in CheckLeadershipAndBindTerm()).
+    // The handler schedules it onto the same serial executor used to prepare
+    // ops; otherwise a write could assign a lower timestamp but a higher OpId
+    // than the no-op and trip the MVCC invariant. This runs under 'lock_'
+    // during commit-index advancement, but the handler only enqueues work (it
+    // does not re-enter the replication path here), mirroring the
+    // FinishConsensusOnlyRound() precedent in TabletReplica.
+    if (FLAGS_raft_replicate_noop_on_voter_addition &&
+        cmeta_->active_role() == RaftPeerPB::LEADER) {
+      bool added_or_promoted_voter = false;
+      for (const auto& peer : new_config.peers()) {
+        if (IsRaftConfigVoter(peer.permanent_uuid(), new_config) &&
+            !IsRaftConfigVoter(peer.permanent_uuid(), old_config)) {
+          added_or_promoted_voter = true;
+          break;
+        }
+      }
+      if (added_or_promoted_voter) {
+        round_handler_->SubmitNoOpToAdvanceMvcc();
+      }
+    }
   } else {
     LOG_WITH_PREFIX_UNLOCKED(INFO)
         << "Ignoring commit of config change with OpId "
@@ -2966,6 +3010,55 @@ void RaftConsensus::CompleteConfigChangeRoundUnlocked(ConsensusRound* round, con
         << "Old config: { " << SecureShortDebugString(old_config) << " }. "
         << "New config: { " << SecureShortDebugString(new_config) << " }";
   }
+}
+
+void RaftConsensus::ReplicateNoOpToAdvanceMvcc() {
+  {
+    std::lock_guard l(lock_);
+    // Bail out unless we're still the ready leader. Since this task was
+    // scheduled, we may have stepped down, started a leadership transfer, or
+    // been shut down.
+    if (state_ != kRunning) {
+      return;
+    }
+    const auto role_and_term = cmeta_->GetRoleAndTerm();
+    if (role_and_term.first != RaftPeerPB::LEADER ||
+        !leader_is_ready_ ||
+        leader_transfer_in_progress_) {
+      return;
+    }
+
+    // This method is invoked from the round handler's serial prepare executor,
+    // the same one that assigns timestamps to and appends write ops (see
+    // op_driver.cc). Because that executor is serial, a write's
+    // AssignTimestamp()+AppendNewRoundToQueueUnlocked() and this no-op's
+    // AssignTimestamp()+AppendNewRoundToQueueUnlocked() cannot interleave, so
+    // the no-op's timestamp is assigned in OpId order relative to writes. That
+    // is exactly the invariant MVCC relies on (see the note in
+    // CheckLeadershipAndBindTerm()), so we mark the no-op as being in OpId
+    // order and let TabletReplica::FinishConsensusOnlyRound() safely advance
+    // the MVCC clean time from its timestamp.
+    auto* replicate = new ReplicateMsg;
+    replicate->set_op_type(NO_OP);
+    replicate->mutable_noop_request()->set_timestamp_in_opid_order(true);
+    scoped_refptr<ConsensusRound> round(
+        new ConsensusRound(this, make_scoped_refptr(new RefCountedReplicate(replicate))));
+    CHECK_OK(time_manager_->AssignTimestamp(round->replicate_msg()));
+
+    auto* round_raw = round.get();
+    round->SetConsensusReplicatedCallback(
+        [this, round_raw](const Status& s) {
+          this->NonTxRoundReplicationFinished(round_raw, &DoNothingStatusCB, s);
+        });
+    Status s = AppendNewRoundToQueueUnlocked(round);
+    if (PREDICT_FALSE(!s.ok())) {
+      LOG_WITH_PREFIX_UNLOCKED(WARNING)
+          << "Unable to replicate no-op to advance MVCC after config change: "
+          << s.ToString();
+      return;
+    }
+  }
+  peer_manager_->SignalRequest();
 }
 
 void RaftConsensus::EnableFailureDetector(optional<MonoDelta> delta) {

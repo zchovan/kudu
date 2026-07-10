@@ -261,6 +261,28 @@ class RaftConsensus : public std::enable_shared_from_this<RaftConsensus>,
   // This method can only be called on the leader, i.e. role() == LEADER
   Status Replicate(const scoped_refptr<ConsensusRound>& round);
 
+  // As the leader, replicate a Raft NO_OP whose timestamp initializes the MVCC
+  // clean time of a voter that was just added or promoted by a config change.
+  //
+  // A Raft no-op carries a timestamp that replicas feed into MVCC (via
+  // FinishConsensusOnlyRound()), which is one of the only ways a replica's MVCC
+  // clean time is initialized. A freshly tablet-copied replica of a "cold"
+  // tablet (one that takes no writes) bootstraps with an uninitialized clean
+  // time and only ever applies CHANGE_CONFIG ops, which do not advance MVCC. If
+  // leadership then never changes again, no no-op is ever replicated to it and
+  // it rejects every snapshot scan with TABLET_NOT_RUNNING / "clean time has
+  // not yet been initialized" indefinitely (KUDU-3163). Emitting a no-op right
+  // after the config change that brings such a replica into the voting config
+  // closes that gap.
+  //
+  // This MUST be invoked from the round handler's serial op-preparation
+  // executor (see ConsensusRoundHandler::SubmitNoOpToAdvanceMvcc()) so the
+  // no-op's timestamp is assigned in OpId order relative to concurrent writes;
+  // otherwise it would violate the MVCC ordering invariant and abort the
+  // tserver. No-ops if this replica is no longer the ready leader by the time
+  // it runs.
+  void ReplicateNoOpToAdvanceMvcc();
+
   // Ensures that the consensus implementation is currently acting as LEADER,
   // and thus is allowed to submit operations to be prepared before they are
   // replicated. To avoid a time-of-check-to-time-of-use (TOCTOU) race, the
@@ -1009,6 +1031,14 @@ class ConsensusRoundHandler {
   // Consensus-only rounds complete when the no-op finishes replication. This
   // can be used to trigger callbacks, akin to an Apply() for regular ops.
   virtual void FinishConsensusOnlyRound(ConsensusRound* round) = 0;
+
+  // Schedule replication of an MVCC-advancing leader no-op
+  // (RaftConsensus::ReplicateNoOpToAdvanceMvcc()) on the same serial executor
+  // the handler uses to prepare ops, so the no-op's timestamp is assigned in
+  // OpId order relative to concurrent writes (KUDU-3163). May be called while
+  // RaftConsensus holds its lock, so implementations must only enqueue work and
+  // not block. Default is a no-op for handlers that don't support it.
+  virtual void SubmitNoOpToAdvanceMvcc() {}
 };
 
 // Context for a consensus round on the LEADER side, typically created as an

@@ -1764,7 +1764,9 @@ TEST_F(RaftConsensusITest, TestConfigChangeUnderLoad) {
   // Wait for all servers to replicate everything up through the last write op.
   // Since we don't batch, there should be at least # rows inserted log entries,
   // plus the initial leader's no-op, plus 2 for the removed servers, plus 2 for
-  // the added servers for a total of 5.
+  // the added servers for a total of 5. This is a lower bound: each voter
+  // addition also triggers an MVCC-advancing no-op (KUDU-3163), so the actual
+  // committed index is higher, which WaitForServersToAgree() tolerates.
   int min_log_index = rows_inserted.Load() + 5;
   ASSERT_OK(WaitForServersToAgree(
       kTimeout, active_tablet_servers, tablet_id_, min_log_index));
@@ -2039,7 +2041,10 @@ TEST_F(RaftConsensusITest, TestAutoCreateReplica) {
   // Wait for all servers to replicate everything up through the last write op.
   // Since we don't batch, there should be at least # rows inserted log entries,
   // plus the initial leader's no-op, plus 1 for
-  // the added replica for a total == #rows + 2.
+  // the added replica for a total == #rows + 2. This is a lower bound: adding
+  // the replica as a voter also triggers an MVCC-advancing no-op (KUDU-3163),
+  // so the actual committed index is higher, which WaitForServersToAgree()
+  // tolerates.
   int min_log_index = num_batches + 2;
   ASSERT_OK(WaitForServersToAgree(MonoDelta::FromSeconds(120),
                                   active_tablet_servers, tablet_id_,

@@ -541,9 +541,14 @@ TEST_P(EvictAndReplaceDeadFollowerITest, UnreachableFollower) {
   cluster_->tablet_server_by_uuid(kFollowerId)->Shutdown();
 
   // Expected OpId index of the committed config:
-  //   * with AddServer, Promote and RemoveServer, the opid_index will be 4.
-  //   * with RemoveServer and AddServer, the opid_index will be 3.
-  const auto expected_opid_index = is_3_4_3_mode ? 4 : 3;
+  //   * 3-4-3 mode (AddServer, Promote, RemoveServer): AddServer -> index 2,
+  //     Promote -> index 3, then the leader replicates an MVCC-advancing no-op
+  //     at index 4 after the voter promotion (KUDU-3163), so RemoveServer lands
+  //     at index 5.
+  //   * 3-2-3 mode (RemoveServer, AddServer): RemoveServer -> index 2,
+  //     AddServer -> index 3. The no-op after the voter addition lands at
+  //     index 4 but does not change the committed config, which stays at 3.
+  const auto expected_opid_index = is_3_4_3_mode ? 5 : 3;
   ASSERT_OK(itest::WaitUntilCommittedConfigOpIdIndexIs(
       expected_opid_index, leader_ts, tablet_id, kTimeout));
   ASSERT_OK(cluster_->tablet_server_by_uuid(kFollowerId)->Restart());

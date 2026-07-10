@@ -215,6 +215,11 @@ class TabletReplica : public RefCountedThreadSafe<TabletReplica>,
   // has finished, advancing MVCC safe time as appropriate.
   void FinishConsensusOnlyRound(consensus::ConsensusRound* round) override;
 
+  // Used by consensus to schedule an MVCC-advancing leader no-op onto the
+  // serial op-preparation executor, so its timestamp is assigned in OpId order
+  // relative to concurrent writes (KUDU-3163).
+  void SubmitNoOpToAdvanceMvcc() override;
+
   consensus::RaftConsensus* consensus() {
     std::lock_guard lock(lock_);
     return consensus_.get();
