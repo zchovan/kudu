@@ -160,12 +160,28 @@ class KuduContext(
 
   // Visible for testing.
   private[kudu] val authnCredentials: Array[Byte] = {
-    KuduContext
-      .getUGI(sc)
-      .doAs(new PrivilegedAction[Array[Byte]] {
-        override def run(): Array[Byte] =
-          syncClient.exportAuthenticationCredentials()
-      })
+    // Prefer Kudu authentication credentials shipped through UserGroupInformation
+    // by the submit-time KuduDelegationTokenProvider. In YARN cluster mode with
+    // --proxy-user the remote driver has no TGT, so exporting credentials here
+    // would fail; the provider has already fetched them at submit time. Fall back
+    // to the driver-side export when UGI carries no Kudu credentials (e.g. client
+    // mode on a gateway host with a TGT, or a keytab-configured application).
+    //
+    // Note: use a match rather than getOrElse. getOrElse takes a by-name argument
+    // that the compiler turns into a closure; because that closure references sc,
+    // sc would be promoted to a field and KuduContext (which is Serializable) would
+    // then capture the non-serializable SparkContext. A match keeps sc referenced
+    // only in the constructor body, so it stays construction-only.
+    KuduSparkSecurity.getCredentialsFromUGI match {
+      case Some(credentials) => credentials
+      case None =>
+        KuduContext
+          .getUGI(sc)
+          .doAs(new PrivilegedAction[Array[Byte]] {
+            override def run(): Array[Byte] =
+              syncClient.exportAuthenticationCredentials()
+          })
+    }
   }
 
   /**

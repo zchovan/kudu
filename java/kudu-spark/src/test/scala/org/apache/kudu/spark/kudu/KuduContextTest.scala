@@ -296,4 +296,12 @@ class KuduContextTest extends KuduTestSuite with Matchers {
     val rows = readDf.filter("id >= 3").orderBy("id").collect()
     assert(rows.head.getAs[Seq[String]]("tags") == Seq("alpha", "beta"))
   }
+
+  @Test
+  def testFallsBackToExportWhenUgiEmpty(): Unit = {
+    // The current user carries no Kudu credentials, so the KuduContext built in
+    // setUpBase must have fallen back to exporting them from the cluster.
+    assert(KuduSparkSecurity.getCredentialsFromUGI.isEmpty)
+    assert(kuduContext.authnCredentials != null)
+  }
 }
