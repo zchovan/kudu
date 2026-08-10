@@ -59,14 +59,15 @@ versions += [
     netty               : "4.1.135.Final",
     osdetector          : "1.6.2",
     protobuf            : "3.25.5",
+    opentelemetry       : "1.64.0",
     ranger              : "2.6.0",
-    scala211            : "2.11.12",
-    scala               : "2.12.20",
+    scala               : "2.13.16",
+    scalaParallelCollections : "1.2.0",
     scalatest           : "3.2.19",
     scopt               : "4.1.0",
     slf4j               : "2.0.17",
-    spark2              : "2.4.8",
     spark               : "3.5.5",
+    spark4              : "4.1.3",
     yetus               : "0.13.0"
 ]
 
@@ -75,11 +76,11 @@ if (gradle.gradleVersion != versions.gradle) {
   logger.warn("Using gradle version $gradle.gradleVersion (Build defines $versions.gradle)")
 }
 
-// If the `spark2` property is passed, override the `spark` and `scala` version
-// to use the `spark2` and `scala211` versions.
-if (propertyExists("spark2")) {
-  versions["spark"] = "$versions.spark2"
-  versions["scala"] = "$versions.scala211"
+// If the `spark4` property is passed, override the `spark` version to build the
+// Spark 4 variant. Both the Spark 3 (default) and Spark 4 variants build against
+// Scala 2.13, so only the Spark version is overridden here.
+if (propertyExists("spark4")) {
+  versions["spark"] = "$versions.spark4"
 }
 
 // Add base Scala version
@@ -137,6 +138,8 @@ libs += [
     logCaptor            : "io.github.hakky54:logcaptor:$versions.logCaptor",
     micrometerCore       : "io.micrometer:micrometer-core:$versions.micrometer",
     mockitoCore          : "org.mockito:mockito-core:$versions.mockito",
+    opentelemetryApi     : "io.opentelemetry:opentelemetry-api:$versions.opentelemetry",
+    opentelemetrySdkTesting : "io.opentelemetry:opentelemetry-sdk-testing:$versions.opentelemetry",
     murmur               : "com.sangupta:murmur:$versions.murmur",
     netty                : "io.netty:netty-all:$versions.netty",
     nettyBuffer          : "io.netty:netty-buffer:$versions.netty",
@@ -151,6 +154,7 @@ libs += [
     protoc               : "com.google.protobuf:protoc:$versions.protobuf",
     rangerPlugin         : "org.apache.ranger:ranger-plugins-common:$versions.ranger",
     scalaLibrary         : "org.scala-lang:scala-library:$versions.scala",
+    scalaParallelCollections : "org.scala-lang.modules:scala-parallel-collections_$versions.scalaBase:$versions.scalaParallelCollections",
     scalap               : "org.scala-lang:scalap:$versions.scala",
     scalatest            : "org.scalatest:scalatest_$versions.scalaBase:$versions.scalatest",
     scopt                : "com.github.scopt:scopt_$versions.scalaBase:$versions.scopt",

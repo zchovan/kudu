@@ -35,6 +35,10 @@ dependencies {
     exclude group: "org.slf4j", module: "slf4j-api"
   }
   compileUnshaded libs.slf4jApi
+  // OpenTelemetry is left unshaded (like slf4j) so the client shares the API types with
+  // the host application's OTel SDK. With only the API on the classpath it is a no-op;
+  // when the application configures an SDK, the client's spans flow to its exporter.
+  compileUnshaded libs.opentelemetryApi
 
   implementation (libs.guava) {
     exclude(group: "com.google.errorprone")
@@ -48,6 +52,10 @@ dependencies {
 
   testImplementation project(":kudu-test-utils")
   testImplementation libs.junit
+  // compileOnly/compileUnshaded deps are not inherited by the test classpath.
+  testImplementation libs.opentelemetryApi
+  // In-memory SdkTracerProvider + exporter for asserting spans in unit tests.
+  testImplementation libs.opentelemetrySdkTesting
   testImplementation libs.log4jApi
   testImplementation libs.log4jCore
   testImplementation libs.log4jSlf4j2Impl

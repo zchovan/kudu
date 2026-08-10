@@ -19,7 +19,7 @@ package org.apache.kudu.spark.kudu
 
 import java.nio.charset.StandardCharsets
 import java.util
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 import scala.collection.immutable.IndexedSeq
 import org.apache.spark.SparkException
 import org.apache.spark.sql.Row
@@ -659,7 +659,7 @@ class DefaultSourceTest extends KuduTestSuite with Matchers {
       def isSorted(rows: Seq[Int]): Boolean = {
         rows.sliding(2).forall(p => (p.size == 1) || p.head < p.tail.head)
       }
-      val (bottomRows, topRows) = rows.map(_.getInt(0)).partition(_ < splitValue)
+      val (bottomRows, topRows) = rows.map(_.getInt(0)).toSeq.partition(_ < splitValue)
       assertTrue(isSorted(bottomRows))
       assertTrue(isSorted(topRows))
     }
@@ -788,7 +788,7 @@ class DefaultSourceTest extends KuduTestSuite with Matchers {
     assertEquals(2, dfWithUserSchema.schema.fields.length)
 
     dfWithUserSchema.limit(10).collect()
-    assertTrue(dfWithUserSchema.columns.deep == Array("c4_long", "key").deep)
+    assertTrue(dfWithUserSchema.columns.sameElements(Array("c4_long", "key")))
   }
 
   @Test

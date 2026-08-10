@@ -1295,12 +1295,14 @@ public class AsyncKuduClient implements AutoCloseable {
    * @return a new AsyncKuduSession
    */
   public AsyncKuduSession newSession() {
-    checkIsClosed();
-    AsyncKuduSession session = new AsyncKuduSession(this);
-    synchronized (sessions) {
-      sessions.add(session);
-    }
-    return session;
+    return KuduTracing.inSpan("kudu.session.open", null, () -> {
+      checkIsClosed();
+      AsyncKuduSession session = new AsyncKuduSession(this);
+      synchronized (sessions) {
+        sessions.add(session);
+      }
+      return session;
+    });
   }
 
   /**
@@ -3106,7 +3108,17 @@ public class AsyncKuduClient implements AutoCloseable {
      * @return a new asynchronous Kudu client
      */
     public AsyncKuduClient build() {
-      return new AsyncKuduClient(this);
+      return KuduTracing.inSpan(
+          "kudu.client.connect",
+          span -> {
+            span.setAttribute("kudu.master_addresses",
+                NetUtil.hostsAndPortsToString(masterAddresses));
+            span.setAttribute("kudu.num_masters", (long) masterAddresses.size());
+            span.setAttribute("kudu.sasl_protocol_name", saslProtocolName);
+            span.setAttribute("kudu.require_authentication", requireAuthentication);
+            span.setAttribute("kudu.encryption_policy", encryptionPolicy.name());
+          },
+          () -> new AsyncKuduClient(this));
     }
   }
 }

@@ -31,7 +31,7 @@ import org.apache.spark.sql.types.DecimalType
 import org.apache.spark.sql.types.StructType
 import org.apache.yetus.audience.InterfaceAudience
 import org.apache.yetus.audience.InterfaceStability
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 
 @InterfaceAudience.Private
 @InterfaceStability.Unstable
@@ -72,7 +72,7 @@ class RowConverter(kuduSchema: Schema, schema: StructType, ignoreNull: Boolean) 
 
           // ========== ARRAY WRITE ==========
           case ArrayType(elemType, containsNull) =>
-            val seq = row.getList[Any](sparkIdx).asScala
+            val seq = row.getList[Any](sparkIdx).asScala.toSeq
             writeArray(
               partialRow,
               kuduIdx,

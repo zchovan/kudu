@@ -75,6 +75,10 @@ dependencies {
   // Note: compileUnshaded is extended from the compileOnly dependency scope.
   testImplementation libs.junit
   testImplementation libs.async
+  // KuduClient.build() routes through OpenTelemetry (KuduTracing). The API is
+  // compileUnshaded on kudu-client and thus not inherited via the plain project
+  // dependency above, so it must be re-declared for the test runtime classpath.
+  testImplementation libs.opentelemetryApi
   testImplementation libs.hamcrest
   testImplementation libs.log4jApi
   testImplementation libs.log4jCore
